@@ -1,16 +1,30 @@
-from random import randint
+import discord
+import random
 
-def count_lines(file_path):
-    with open(file_path, 'r') as file:
-        line_count = sum(1 for line in file)
-    return line_count
+TOKEN = 'MTE3NjM2NjAyMTY5NTc4Mjk0Mg.G79yvN.Im3p2AJawpQY7e36X2FE-kcC8wCGPYJztRjZjY'
+QUOTES_FILE = 'Arnar_Encyclopedia.txt'
 
+intents = intents=discord.Intents.default()
+intents.message_content = True
 
-if __name__ == '__main__':
-    path = "Arnar_Encyclopedia.txt"
-    line_count = count_lines(path)
-    f = open(path, "r")
-    line = randint(0, line_count - 1)
-    content = f.readlines()
-    print(content[line])
+client = discord.Client(intents = intents)
 
+@client.event
+async def on_ready():
+    print(f'We have logged in as {client.user}')
+
+@client.event
+async def on_message(message):
+    if message.author == client.user:
+        return
+
+    if message.content.startswith('!egg'):
+        quote = get_random_quote()
+        await message.channel.send(quote)
+
+def get_random_quote():
+    with open(QUOTES_FILE, 'r', encoding='utf-8') as file:
+        quotes = file.readlines()
+    return random.choice(quotes)
+
+client.run(TOKEN)
