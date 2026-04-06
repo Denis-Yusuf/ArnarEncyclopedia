@@ -5,6 +5,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from cogs.music import MusicCog
+from cogs.egg import Eggcog
 from services.spotify import SpotifyService
 from services.youtube import YouTubeService
 
@@ -21,6 +22,7 @@ class SaltBot(commands.Bot):
             client_secret = os.getenv("SPOTIFY_CLIENT_SECRET"),
         )
         await self.add_cog(MusicCog(self, youtube, spotify))
+        await self.add_cog(Eggcog(self))
         await self.tree.sync()  # registers slash commands globally
 
 
