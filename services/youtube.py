@@ -15,12 +15,12 @@ FFMPEG_OPTIONS = {
 
 
 class YouTubeService:
-    """Handles audio extraction from YouTube via yt-dlp."""
+    """Talks to YouTube via yt-dlp to pull streamable audio URLs."""
 
     @staticmethod
     def build_query(query: str) -> str:
         """
-        Returns a yt-dlp compatible query string.
+        Passes URLs through as-is; wraps plain text in a ytsearch: prefix.
 
         :param query: A raw YouTube URL or plain-text search string.
         :return: The original URL if it starts with 'http', otherwise a 'ytsearch:' prefixed string.
@@ -29,10 +29,11 @@ class YouTubeService:
 
     async def fetch_audio(self, query: str) -> tuple[str, str, str]:
         """
-        Extracts a streamable audio URL, title, and watch URL from YouTube using yt-dlp.
+        Asks yt-dlp for the best audio stream for a query.
+        Runs in a thread executor so it doesn't block the event loop.
 
         :param query: A YouTube URL or yt-dlp search string (e.g. 'ytsearch:lofi hip hop').
-        :return: A tuple of (audio_stream_url, video_title, webpage_url).
+        :return: A tuple of (stream_url, title, webpage_url).
         """
         loop = asyncio.get_event_loop()
         with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ydl:

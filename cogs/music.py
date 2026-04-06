@@ -1,4 +1,5 @@
 import asyncio
+import random
 
 import discord
 from discord.ext import commands
@@ -7,31 +8,165 @@ from services.spotify import SpotifyService
 from services.youtube import FFMPEG_OPTIONS, YouTubeService
 
 
+class NowPlayingView(discord.ui.View):
+    """Buttons that sit under the now-playing message so you can control playback without typing commands."""
+
+    def __init__(self, cog: 'MusicCog', ctx: commands.Context) -> None:
+        """
+        :param cog: Used to access and mutate playback state.
+        :param ctx: Used to resolve the voice client and guild.
+        """
+        super().__init__(timeout = None)
+        self.cog = cog
+        self.ctx = ctx
+
+    def disable_all(self) -> None:
+        """Greys out all buttons once there's nothing left to control."""
+        for item in self.children:
+            item.disabled = True
+
+    @discord.ui.button(label = '⏸ Pause', style = discord.ButtonStyle.secondary)
+    async def pause_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """
+        Pauses or resumes depending on the current state. Label and colour flip to match.
+
+        :param interaction: The interaction created by the button press.
+        :param button: The button that was clicked.
+        """
+        vc = self.ctx.voice_client
+        if not vc:
+            await interaction.response.defer()
+            return
+        if vc.is_paused():
+            vc.resume()
+            button.label = '⏸ Pause'
+            button.style = discord.ButtonStyle.secondary
+        elif vc.is_playing():
+            vc.pause()
+            button.label = '▶ Resume'
+            button.style = discord.ButtonStyle.success
+        await interaction.response.edit_message(view = self)
+
+    @discord.ui.button(label = '⏭ Skip', style = discord.ButtonStyle.primary)
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """
+        Skips the current song. Stopping the VC triggers the after_playing chain into the next one.
+
+        :param interaction: The interaction created by the button press.
+        :param button: The button that was clicked.
+        """
+        vc = self.ctx.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+        await interaction.response.defer()
+
+    @discord.ui.button(label = '🔁 Loop', style = discord.ButtonStyle.secondary)
+    async def loop_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """
+        Toggles loop mode. Turns green so you can tell it's on at a glance.
+
+        :param interaction: The interaction created by the button press.
+        :param button: The button that was clicked.
+        """
+        enabled = not self.cog.is_looping(self.ctx.guild.id)
+        self.cog.set_loop(self.ctx.guild.id, enabled)
+        button.style = discord.ButtonStyle.success if enabled else discord.ButtonStyle.secondary
+        await interaction.response.edit_message(view = self)
+
+    @discord.ui.button(label = '⏹ Stop', style = discord.ButtonStyle.danger)
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        """
+        Kills playback, wipes the queue, and leaves the channel.
+
+        :param interaction: The interaction created by the button press.
+        :param button: The button that was clicked.
+        """
+        if self.ctx.voice_client:
+            self.cog.get_queue(self.ctx.guild.id).clear()
+            self.cog.set_loop(self.ctx.guild.id, False)
+            self.cog._current.pop(self.ctx.guild.id, None)
+            self.cog._cancel_disconnect(self.ctx.guild.id)
+            self.ctx.voice_client.stop()
+            await self.ctx.voice_client.disconnect()
+        self.cog._now_playing_messages.pop(self.ctx.guild.id, None)
+        self.cog._now_playing_views.pop(self.ctx.guild.id, None)
+        self.disable_all()
+        await interaction.response.edit_message(view = self)
+
+
+class QueueSelect(discord.ui.Select):
+    """Dropdown that lists the queue so you can jump straight to any song."""
+
+    def __init__(self, cog: 'MusicCog', ctx: commands.Context, queue: list[dict]) -> None:
+        """
+        :param cog: Used to access and mutate queue state.
+        :param ctx: Used to resolve the voice client and guild.
+        :param queue: The current list of queued song dicts.
+        """
+        # Discord caps select menus at 25 options, so we just take the first 25
+        self.cog = cog
+        self.ctx = ctx
+        options = [
+            discord.SelectOption(label = f"{i + 1}. {item['title'][:90]}", value = str(i))
+            for i, item in enumerate(queue[:25])
+        ]
+        super().__init__(placeholder = 'Skip to a song...', options = options)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """
+        Drops everything before the chosen song and stops the current track so the next one kicks in.
+
+        :param interaction: The interaction created by the select menu.
+        """
+        index = int(self.values[0])
+        queue = self.cog.get_queue(self.ctx.guild.id)
+        del queue[:index]
+        vc = self.ctx.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            vc.stop()
+        await interaction.response.defer()
+
+
+class QueueView(discord.ui.View):
+    """Wraps QueueSelect into a view that gets attached to the /queue message."""
+
+    def __init__(self, cog: 'MusicCog', ctx: commands.Context) -> None:
+        """
+        :param cog: Passed through to QueueSelect.
+        :param ctx: Passed through to QueueSelect.
+        """
+        super().__init__(timeout = 60)
+        queue = cog.get_queue(ctx.guild.id)
+        if queue:
+            self.add_item(QueueSelect(cog, ctx, queue))
+
+
 class MusicCog(commands.Cog):
-    """Discord Cog providing music playback and queue management commands."""
+    """Handles all music commands and keeps per-guild playback state."""
 
     def __init__(self, bot: commands.Bot, youtube: YouTubeService, spotify: SpotifyService) -> None:
         """
-        Initializes the MusicCog with the bot instance and required services.
-
         :param bot: The running Discord bot instance.
-        :param youtube: The YouTubeService instance used for audio extraction.
-        :param spotify: The SpotifyService instance used for track resolution.
+        :param youtube: Used for audio extraction.
+        :param spotify: Used for track resolution.
         """
         self.bot = bot
         self.youtube = youtube
         self.spotify = spotify
+        # All state is keyed by guild ID so the bot works across multiple servers
         self._queues: dict[int, list[dict]] = {}
         self._loop: dict[int, bool] = {}
         self._current: dict[int, dict | None] = {}
         self._disconnect_tasks: dict[int, asyncio.Task] = {}
+        self._now_playing_messages: dict[int, discord.Message] = {}
+        self._now_playing_views: dict[int, NowPlayingView] = {}
 
     def get_queue(self, guild_id: int) -> list[dict]:
         """
-        Returns the song queue for a given guild, creating it if it does not exist.
+        Returns the queue for a guild, creating an empty one on first access.
 
-        :param guild_id: The Discord guild (server) ID.
-        :return: A list of queued song dicts, each with 'query' and 'title' keys.
+        :param guild_id: The Discord guild ID.
+        :return: List of queued song dicts, each with 'query' and 'title' keys.
         """
         if guild_id not in self._queues:
             self._queues[guild_id] = []
@@ -39,36 +174,43 @@ class MusicCog(commands.Cog):
 
     def is_looping(self, guild_id: int) -> bool:
         """
-        Returns whether loop mode is enabled for a given guild.
-
-        :param guild_id: The Discord guild (server) ID.
-        :return: True if loop is enabled, False otherwise.
+        :param guild_id: The Discord guild ID.
+        :return: True if loop mode is on for this guild.
         """
         return self._loop.get(guild_id, False)
 
     def set_loop(self, guild_id: int, value: bool) -> None:
         """
-        Sets the loop mode for a given guild.
-
-        :param guild_id: The Discord guild (server) ID.
+        :param guild_id: The Discord guild ID.
         :param value: True to enable looping, False to disable.
         """
         self._loop[guild_id] = value
 
     def get_current(self, guild_id: int) -> dict | None:
         """
-        Returns the currently playing song for a given guild.
-
-        :param guild_id: The Discord guild (server) ID.
-        :return: A song dict with 'query' and 'title' keys, or None if nothing is playing.
+        :param guild_id: The Discord guild ID.
+        :return: The song currently playing, or None if nothing is.
         """
         return self._current.get(guild_id)
 
+    def _is_queued(self, guild_id: int, title: str) -> bool:
+        """
+        Checks whether this title is already playing or sitting in the queue.
+
+        :param guild_id: The Discord guild ID.
+        :param title: The resolved display title to check for.
+        :return: True if the title appears in the queue or is the current song.
+        """
+        if any(item['title'] == title for item in self.get_queue(guild_id)):
+            return True
+        current = self.get_current(guild_id)
+        return current is not None and current['title'] == title
+
     def _cancel_disconnect(self, guild_id: int) -> None:
         """
-        Cancels any pending inactivity disconnect task for a given guild.
+        Cancels any pending inactivity disconnect for this guild.
 
-        :param guild_id: The Discord guild (server) ID.
+        :param guild_id: The Discord guild ID.
         """
         task = self._disconnect_tasks.pop(guild_id, None)
         if task:
@@ -76,10 +218,9 @@ class MusicCog(commands.Cog):
 
     def _schedule_disconnect(self, ctx: commands.Context) -> None:
         """
-        Schedules an automatic disconnect after 10 minutes of inactivity.
-        Cancels any previously scheduled task for the guild before creating a new one.
+        Queues up an auto-disconnect after 5 minutes of silence, replacing any existing timer.
 
-        :param ctx: The command context used to access the voice client and send messages.
+        :param ctx: Used to access the voice client and send messages.
         """
         self._cancel_disconnect(ctx.guild.id)
         self._disconnect_tasks[ctx.guild.id] = asyncio.create_task(
@@ -88,60 +229,83 @@ class MusicCog(commands.Cog):
 
     async def _disconnect_after_timeout(self, ctx: commands.Context) -> None:
         """
-        Waits 10 minutes, then disconnects from the voice channel if nothing is playing.
+        Waits 5 minutes and leaves the channel if nothing started playing in that time.
 
-        :param ctx: The command context used to access the voice client and send messages.
+        :param ctx: Used to access the voice client and send messages.
         """
-        await asyncio.sleep(600)
+        time = 300
+        await asyncio.sleep(time)
         if ctx.voice_client and not ctx.voice_client.is_playing():
             self.get_queue(ctx.guild.id).clear()
             self.set_loop(ctx.guild.id, False)
             self._current.pop(ctx.guild.id, None)
             self._disconnect_tasks.pop(ctx.guild.id, None)
+            await self._clear_now_playing(ctx.guild.id)
             await ctx.voice_client.disconnect()
-            await ctx.send("Disconnected due to 10 minutes of inactivity.")
+            await ctx.send("Disconnected due to {} minutes of inactivity.".format(round(time / 60)))
+
+    async def _clear_now_playing(self, guild_id: int) -> None:
+        """
+        Disables the buttons on the last now-playing message and forgets about it.
+
+        :param guild_id: The Discord guild ID.
+        """
+        view = self._now_playing_views.pop(guild_id, None)
+        msg = self._now_playing_messages.pop(guild_id, None)
+        if view and msg:
+            view.disable_all()
+            try:
+                await msg.edit(view = view)
+            except discord.NotFound:
+                pass
 
     async def _stream(self, ctx: commands.Context, query: str, title: str, webpage_url: str) -> None:
         """
-        Creates an audio source and begins playback, chaining to the next song when done.
-        Replays the current song instead of advancing if loop mode is enabled.
+        Starts streaming a song and posts the now-playing message with control buttons.
+        If loop is on, the same song replays instead of moving to the queue.
 
-        :param ctx: The command context used to access the voice client and send messages.
-        :param query: The yt-dlp compatible query string for the song.
-        :param title: The display title of the song.
-        :param webpage_url: The YouTube watch URL to display beneath the now-playing message.
+        :param ctx: Used to access the voice client and send messages.
+        :param query: yt-dlp compatible query string for the song.
+        :param title: Display title of the song.
+        :param webpage_url: YouTube watch URL shown under the now-playing message.
         """
         self._cancel_disconnect(ctx.guild.id)
+        await self._clear_now_playing(ctx.guild.id)
+
         audio_url, _, _ = await self.youtube.fetch_audio(query)
         source = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), volume = 1.0
+            discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), volume = 0.5
         )
         self._current[ctx.guild.id] = {"query": query, "title": title}
+        view = NowPlayingView(self, ctx)
 
-        def after_playing(error: Exception | None) -> None:
-            if self.is_looping(ctx.guild.id):
-                current = self.get_current(ctx.guild.id)
-                if current:
-                    asyncio.run_coroutine_threadsafe(
-                        self._stream(ctx, current['query'], current['title'], webpage_url),
-                        self.bot.loop,
-                    )
-            else:
-                asyncio.run_coroutine_threadsafe(self._play_next(ctx), self.bot.loop)
+        done = asyncio.Event()
+        ctx.voice_client.play(source, after = lambda _: done.set())
 
-        ctx.voice_client.play(source, after = after_playing)
-        await ctx.send(f'Now playing: **{title}**\n{webpage_url}')
+        msg = await ctx.send(f'Now playing: **{title}**\n{webpage_url}', view = view)
+        self._now_playing_messages[ctx.guild.id] = msg
+        self._now_playing_views[ctx.guild.id] = view
+
+        await done.wait()
+
+        if self.is_looping(ctx.guild.id):
+            current = self.get_current(ctx.guild.id)
+            if current:
+                await self._stream(ctx, current['query'], current['title'], webpage_url)
+        else:
+            await self._play_next(ctx)
 
     async def _play_next(self, ctx: commands.Context) -> None:
         """
-        Pops and plays the next song in the guild queue, if any.
+        Pulls the next song off the queue and plays it, or starts the idle timer if the queue is empty.
 
-        :param ctx: The command context used to access the voice client and send messages.
+        :param ctx: Used to access the voice client and send messages.
         """
         queue = self.get_queue(ctx.guild.id)
         if not ctx.voice_client:
             return
         if not queue:
+            await self._clear_now_playing(ctx.guild.id)
             self._schedule_disconnect(ctx)
             return
 
@@ -152,11 +316,11 @@ class MusicCog(commands.Cog):
 
     async def _play_in_voice(self, ctx: commands.Context, query: str) -> None:
         """
-        Joins the author's voice channel and streams audio from the given query.
-        If audio is already playing, the song is added to the queue instead.
+        Joins the user's voice channel and plays the given query.
+        If something is already playing, the song gets queued instead.
 
-        :param ctx: The command context used to access voice state and send messages.
-        :param query: A yt-dlp compatible query string (URL or 'ytsearch:...' prefix).
+        :param ctx: Used to access voice state and send messages.
+        :param query: yt-dlp compatible query string (URL or 'ytsearch:...' prefix).
         """
         if not ctx.author.voice:
             await ctx.send("You must be in a voice channel.")
@@ -172,6 +336,9 @@ class MusicCog(commands.Cog):
             _, title, webpage_url = await self.youtube.fetch_audio(query)
 
             if ctx.voice_client.is_playing():
+                if self._is_queued(ctx.guild.id, title):
+                    await ctx.send(f'**{title}** is already in the queue.')
+                    return
                 self.get_queue(ctx.guild.id).append({"query": query, "title": title})
                 await ctx.send(f'Added to queue: **{title}**')
                 return
@@ -179,28 +346,16 @@ class MusicCog(commands.Cog):
             ctx.voice_client.stop()
             await self._stream(ctx, query, title, webpage_url)
 
-    @commands.command(name = 'y')
+    @commands.hybrid_command(name = 'y', description = 'Play from a YouTube URL or search query.')
     async def youtube_cmd(self, ctx: commands.Context, *, query: str) -> None:
-        """
-        Plays audio from a YouTube URL or search query.
-        Adds to the queue if something is already playing.
-
-        :param ctx: The command context.
-        :param query: A YouTube URL or plain-text search query.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
         await self._play_in_voice(ctx, self.youtube.build_query(query))
 
-    @commands.command(name = 's')
+    @commands.hybrid_command(name = 's', description = 'Play from a Spotify URL or search query.')
     async def spotify_cmd(self, ctx: commands.Context, *, query: str) -> None:
-        """
-        Plays audio from a Spotify URL or search query by routing through YouTube.
-        Adds to the queue if something is already playing.
-
-        :param ctx: The command context.
-        :param query: A Spotify track URL or plain-text search query.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
         search_query = self.spotify.resolve_query(query)
         if not search_query:
             await ctx.send("No results found on Spotify.")
@@ -208,16 +363,10 @@ class MusicCog(commands.Cog):
         await ctx.send(f'Found: **{search_query}** — searching YouTube...')
         await self._play_in_voice(ctx, f'ytsearch:{search_query}')
 
-    @commands.command(name = 'add')
+    @commands.hybrid_command(name = 'add', description = 'Add a song to the queue without interrupting playback.')
     async def add_cmd(self, ctx: commands.Context, *, query: str) -> None:
-        """
-        Adds a song to the queue without interrupting current playback.
-        Accepts YouTube URLs/searches or Spotify URLs/searches.
-
-        :param ctx: The command context.
-        :param query: A YouTube/Spotify URL or plain-text search query.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
 
         if 'spotify.com/track/' in query:
             resolved = self.spotify.resolve_query(query)
@@ -230,34 +379,40 @@ class MusicCog(commands.Cog):
 
         async with ctx.typing():
             _, title, _ = await self.youtube.fetch_audio(yt_query)
+            if self._is_queued(ctx.guild.id, title):
+                await ctx.send(f'**{title}** is already in the queue.')
+                return
             self.get_queue(ctx.guild.id).append({"query": yt_query, "title": title})
             position = len(self.get_queue(ctx.guild.id))
             await ctx.send(f'Added to queue at position **{position}**: **{title}**')
 
-    @commands.command(name = 'queue')
+    @commands.hybrid_command(name = 'queue', description = 'Show the queue. Use the dropdown to skip to a song.')
     async def queue_cmd(self, ctx: commands.Context) -> None:
-        """
-        Displays the current song queue.
-
-        :param ctx: The command context.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
         queue = self.get_queue(ctx.guild.id)
         if not queue:
             await ctx.send("The queue is empty.")
             return
         lines = [f"`{i + 1}.` {item['title']}" for i, item in enumerate(queue)]
-        await ctx.send("**Queue:**\n" + "\n".join(lines))
+        suffix = f"\n*Showing first 25 of {len(queue)} songs.*" if len(queue) > 25 else ""
+        await ctx.send("**Queue:**\n" + "\n".join(lines) + suffix, view = QueueView(self, ctx))
 
-    @commands.command(name = 'remove')
+    @commands.hybrid_command(name = 'shuffle', description = 'Shuffle the song queue.')
+    async def shuffle_cmd(self, ctx: commands.Context) -> None:
+        if ctx.interaction is None:
+            await ctx.message.delete()
+        queue = self.get_queue(ctx.guild.id)
+        if len(queue) < 2:
+            await ctx.send("Not enough songs in the queue to shuffle.")
+            return
+        random.shuffle(queue)
+        await ctx.send("Queue shuffled.")
+
+    @commands.hybrid_command(name = 'remove', description = 'Remove a song from the queue by its position number.')
     async def remove_cmd(self, ctx: commands.Context, index: int) -> None:
-        """
-        Removes a song from the queue by its 1-based position number.
-
-        :param ctx: The command context.
-        :param index: The 1-based position of the song to remove.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
         queue = self.get_queue(ctx.guild.id)
         if index < 1 or index > len(queue):
             await ctx.send(f"Invalid position. Queue has **{len(queue)}** item(s).")
@@ -265,41 +420,29 @@ class MusicCog(commands.Cog):
         removed = queue.pop(index - 1)
         await ctx.send(f'Removed: **{removed["title"]}**')
 
-    @commands.command(name = 'skip')
+    @commands.hybrid_command(name = 'skip', description = 'Skip the current song.')
     async def skip_cmd(self, ctx: commands.Context) -> None:
-        """
-        Skips the current song and plays the next one in the queue.
-
-        :param ctx: The command context.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
         if ctx.voice_client and ctx.voice_client.is_playing():
-            ctx.voice_client.stop()  # triggers after_playing → _play_next
+            ctx.voice_client.stop()
+            await ctx.send("Skipped.")
         else:
             await ctx.send("Nothing is playing.")
 
-    @commands.command(name = 'loop')
+    @commands.hybrid_command(name = 'loop', description = 'Toggle loop mode for the current song.')
     async def loop_cmd(self, ctx: commands.Context) -> None:
-        """
-        Toggles loop mode for the current song. When enabled, the current song
-        replays indefinitely instead of advancing to the next item in the queue.
-
-        :param ctx: The command context.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
         enabled = not self.is_looping(ctx.guild.id)
         self.set_loop(ctx.guild.id, enabled)
         state = "enabled" if enabled else "disabled"
         await ctx.send(f'Loop {state}.')
 
-    @commands.command(name = 'pause')
+    @commands.hybrid_command(name = 'pause', description = 'Toggle pause/resume.')
     async def pause_cmd(self, ctx: commands.Context) -> None:
-        """
-        Pauses playback if currently playing, or resumes it if currently paused.
-
-        :param ctx: The command context.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
         vc = ctx.voice_client
         if not vc:
             await ctx.send("Not connected to a voice channel.")
@@ -313,18 +456,18 @@ class MusicCog(commands.Cog):
         else:
             await ctx.send("Nothing is playing.")
 
-    @commands.command(name = 'stop')
+    @commands.hybrid_command(name = 'stop', description = 'Stop playback, clear the queue, and disconnect.')
     async def stop_cmd(self, ctx: commands.Context) -> None:
-        """
-        Stops playback, clears the queue, and disconnects from the voice channel.
-
-        :param ctx: The command context.
-        """
-        await ctx.message.delete()
+        if ctx.interaction is None:
+            await ctx.message.delete()
         if ctx.voice_client:
             self.get_queue(ctx.guild.id).clear()
             self.set_loop(ctx.guild.id, False)
             self._current.pop(ctx.guild.id, None)
             self._cancel_disconnect(ctx.guild.id)
+            await self._clear_now_playing(ctx.guild.id)
             ctx.voice_client.stop()
             await ctx.voice_client.disconnect()
+            await ctx.send("Stopped.")
+        else:
+            await ctx.send("Not connected to a voice channel.")

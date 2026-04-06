@@ -5,12 +5,10 @@ from spotipy.oauth2 import SpotifyClientCredentials
 
 
 class SpotifyService:
-    """Handles Spotify track resolution via the Spotify Web API."""
+    """Resolves Spotify URLs and search queries into 'Artist - Title' strings for YouTube lookup."""
 
     def __init__(self, client_id: str, client_secret: str) -> None:
         """
-        Initializes the Spotify client with application credentials.
-
         :param client_id: The Spotify application client ID.
         :param client_secret: The Spotify application client secret.
         """
@@ -21,10 +19,10 @@ class SpotifyService:
 
     def resolve_query(self, query: str) -> str | None:
         """
-        Resolves a Spotify URL or search query into an 'Artist - Title' string for YouTube lookup.
+        Takes a Spotify URL or plain search string and returns 'Artist - Title'.
 
         :param query: A Spotify track URL or plain-text search query.
-        :return: A formatted 'Artist - Title' string, or None if no match was found.
+        :return: A formatted 'Artist - Title' string, or None if nothing was found.
         """
         track_match = re.search(r'spotify\.com/track/([a-zA-Z0-9]+)', query)
         if track_match:

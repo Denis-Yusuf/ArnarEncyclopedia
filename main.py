@@ -12,19 +12,16 @@ load_dotenv()
 
 
 class SaltBot(commands.Bot):
-    """Main bot class. Handles cog and service initialization on startup."""
+    """The bot. Wires up services and cogs on startup."""
 
     async def setup_hook(self) -> None:
-        """
-        Called once after login, before connecting to the gateway.
-        Instantiates services and loads cogs.
-        """
         youtube = YouTubeService()
         spotify = SpotifyService(
             client_id = os.getenv("SPOTIFY_CLIENT_ID"),
             client_secret = os.getenv("SPOTIFY_CLIENT_SECRET"),
         )
         await self.add_cog(MusicCog(self, youtube, spotify))
+        await self.tree.sync()  # registers slash commands globally
 
 
 intents = discord.Intents.default()
