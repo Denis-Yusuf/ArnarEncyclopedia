@@ -1,30 +1,35 @@
+import os
+
 import discord
-import random
+from discord.ext import commands
+from dotenv import load_dotenv
 
-TOKEN = 'MTE3NjM2NjAyMTY5NTc4Mjk0Mg.G79yvN.Im3p2AJawpQY7e36X2FE-kcC8wCGPYJztRjZjY'
-QUOTES_FILE = 'Arnar_Encyclopedia.txt'
+from cogs.music import MusicCog
+from cogs.egg import Eggcog
+from cogs.presence import PresenceCog
+from services.spotify import SpotifyService
+from services.youtube import YouTubeService
 
-intents = intents=discord.Intents.default()
+load_dotenv()
+
+
+class SaltBot(commands.Bot):
+    """The bot. Wires up services and cogs on startup."""
+
+    async def setup_hook(self) -> None:
+        youtube = YouTubeService()
+        spotify = SpotifyService(
+            client_id = os.getenv("SPOTIFY_CLIENT_ID"),
+            client_secret = os.getenv("SPOTIFY_CLIENT_SECRET"),
+        )
+        await self.add_cog(MusicCog(self, youtube, spotify))
+        await self.add_cog(Eggcog(self))
+        await self.add_cog(PresenceCog(self))
+        await self.tree.sync()  # registers slash commands globally
+
+
+intents = discord.Intents.default()
 intents.message_content = True
 
-client = discord.Client(intents = intents)
-
-@client.event
-async def on_ready():
-    print(f'We have logged in as {client.user}')
-
-@client.event
-async def on_message(message):
-    if message.author == client.user:
-        return
-
-    if message.content.startswith('!egg'):
-        quote = get_random_quote()
-        await message.channel.send(quote)
-
-def get_random_quote():
-    with open(QUOTES_FILE, 'r', encoding='utf-8') as file:
-        quotes = file.readlines()
-    return random.choice(quotes)
-
-client.run(TOKEN)
+bot = SaltBot(command_prefix = '/', intents = intents)
+bot.run(os.getenv("TOKEN"))
