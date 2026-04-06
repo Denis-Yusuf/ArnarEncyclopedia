@@ -107,8 +107,8 @@ class QueueSelect(discord.ui.Select):
         self.cog = cog
         self.ctx = ctx
         options = [
-            discord.SelectOption(label = f"{i + 1}. {item['title'][:90]}", value = str(i))
-            for i, item in enumerate(queue[:25])
+            discord.SelectOption(label = f"{position + 1}. {item['title'][:90]}", value = str(position))
+            for position, item in enumerate(queue[:25])
         ]
         super().__init__(placeholder = 'Skip to a song...', options = options)
 
@@ -280,7 +280,7 @@ class MusicCog(commands.Cog):
         view = NowPlayingView(self, ctx)
 
         done = asyncio.Event()
-        ctx.voice_client.play(source, after = lambda _: done.set())
+        ctx.voice_client.play(source, after = lambda error: done.set())
 
         msg = await ctx.send(f'Now playing: **{title}**\n{webpage_url}', view = view)
         self._now_playing_messages[ctx.guild.id] = msg
@@ -394,7 +394,7 @@ class MusicCog(commands.Cog):
         if not queue:
             await ctx.send("The queue is empty.")
             return
-        lines = [f"`{i + 1}.` {item['title']}" for i, item in enumerate(queue)]
+        lines = [f"`{position + 1}.` {item['title']}" for position, item in enumerate(queue)]
         suffix = f"\n*Showing first 25 of {len(queue)} songs.*" if len(queue) > 25 else ""
         await ctx.send("**Queue:**\n" + "\n".join(lines) + suffix, view = QueueView(self, ctx))
 

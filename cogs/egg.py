@@ -1,3 +1,4 @@
+import os
 import random
 
 import discord
@@ -7,13 +8,12 @@ from discord.ext import commands
 class Eggcog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.ma_channel_id = int(os.getenv("MUDAI_CHANNEL_ID"))
         self.quotes: list[str] = [
             line.strip()
             for line in open("././Arnar_Encyclopedia.txt", 'r', encoding = "utf-8").readlines()
             if line.strip()
         ]
-
-    MA_CHANNEL_ID = 1463216947910021385
 
     @commands.hybrid_command(name = 'egg', description = 'Mimic Arnar.')
     async def egg(self, ctx: commands.Context) -> None:
@@ -23,7 +23,7 @@ class Eggcog(commands.Cog):
         pick = random.choice(self.quotes)
         is_url = pick.startswith("http://") or pick.startswith("https://")
         if pick == "$ma":
-            channel = self.bot.get_channel(self.MA_CHANNEL_ID)
+            channel = self.bot.get_channel(self.ma_channel_id)
             target = channel if channel is not None else ctx
         else:
             target = ctx

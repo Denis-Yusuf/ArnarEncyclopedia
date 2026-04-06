@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 
 from cogs.music import MusicCog
 from cogs.egg import Eggcog
+from cogs.presence import PresenceCog
 from services.spotify import SpotifyService
 from services.youtube import YouTubeService
 
@@ -23,6 +24,7 @@ class SaltBot(commands.Bot):
         )
         await self.add_cog(MusicCog(self, youtube, spotify))
         await self.add_cog(Eggcog(self))
+        await self.add_cog(PresenceCog(self))
         await self.tree.sync()  # registers slash commands globally
 
 
