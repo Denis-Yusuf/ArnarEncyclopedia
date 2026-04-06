@@ -1,0 +1,9 @@
+services:
+  saltbot:
+    build: .
+    restart: unless-stopped
+    environment:
+      - TOKEN=${TOKEN}
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - MUDAI_CHANNEL_ID=${MUDAI_CHANNEL_ID}
