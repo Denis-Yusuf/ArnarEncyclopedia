@@ -99,6 +99,9 @@ class NowPlayingView(discord.ui.View):
         await interaction.response.edit_message(view = self)
 
 
+PLAYLIST_CAP = 50
+
+
 class QueueSelect(discord.ui.Select):
     """Dropdown that lists the queue so you can jump straight to any song."""
 
@@ -115,7 +118,7 @@ class QueueSelect(discord.ui.Select):
             discord.SelectOption(label = f"{position + 1}. {item['title'][:90]}", value = str(position))
             for position, item in enumerate(queue[:25])
         ]
-        super().__init__(placeholder = 'Skip to a song...', options = options)
+        super().__init__(placeholder = 'Skip to a song...', options = options, row = 0)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         """
@@ -130,22 +133,61 @@ class QueueSelect(discord.ui.Select):
         vc = self.ctx.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
-        self.disabled = True
+        for item in self.view.children:
+            item.disabled = True
         await interaction.response.edit_message(view = self.view)
 
 
+class RemoveSelect(discord.ui.Select):
+    """Dropdown that lets you remove a specific song from the queue."""
+
+    def __init__(self, cog: 'MusicCog', ctx: commands.Context, queue: list[dict]) -> None:
+        """
+        :param cog: Used to access and mutate queue state.
+        :param ctx: Used to resolve the guild.
+        :param queue: The current list of queued song dicts.
+        """
+        self.cog = cog
+        self.ctx = ctx
+        options = [
+            discord.SelectOption(label = f"{position + 1}. {item['title'][:90]}", value = str(position))
+            for position, item in enumerate(queue[:25])
+        ]
+        super().__init__(placeholder = 'Remove a song...', options = options, row = 1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """
+        Removes the chosen song from the queue and disables both dropdowns.
+
+        :param interaction: The interaction created by the select menu.
+        """
+        index = int(self.values[0])
+        queue = self.cog.get_queue(self.ctx.guild.id)
+        if index >= len(queue):
+            await interaction.response.send_message("That song is no longer in the queue.", ephemeral = True)
+            return
+        removed = queue.pop(index)
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content = f"Removed **{removed['title']}** from the queue.",
+            view = self.view,
+        )
+
+
 class QueueView(discord.ui.View):
-    """Wraps QueueSelect into a view that gets attached to the /queue message."""
+    """Wraps QueueSelect and RemoveSelect into a view attached to the /queue message."""
 
     def __init__(self, cog: 'MusicCog', ctx: commands.Context) -> None:
         """
-        :param cog: Passed through to QueueSelect.
-        :param ctx: Passed through to QueueSelect.
+        :param cog: Passed through to the select components.
+        :param ctx: Passed through to the select components.
         """
         super().__init__(timeout = 60)
         queue = cog.get_queue(ctx.guild.id)
         if queue:
             self.add_item(QueueSelect(cog, ctx, queue))
+            self.add_item(RemoveSelect(cog, ctx, queue))
 
 
 class SeekSelect(discord.ui.Select):
@@ -524,6 +566,8 @@ class MusicCog(commands.Cog):
                 await ctx.send("The playlist appears to be empty or unavailable.")
                 return
 
+            capped = len(entries) > PLAYLIST_CAP
+            entries = entries[:PLAYLIST_CAP]
             queue = self.get_queue(ctx.guild.id)
             added = 0
             # Track the first newly added entry so we can pop and play it immediately
@@ -536,7 +580,8 @@ class MusicCog(commands.Cog):
                     if first_entry is None:
                         first_entry = queue[-1]
 
-            await ctx.send(f'Added **{added}** song(s) from playlist to queue.')
+            cap_note = f" *(capped at {PLAYLIST_CAP})*" if capped else ""
+            await ctx.send(f'Added **{added}** song(s) from playlist to queue{cap_note}.')
 
             first_audio = None
             if not ctx.voice_client.is_playing() and first_entry:
@@ -614,6 +659,8 @@ class MusicCog(commands.Cog):
                     await ctx.send("The playlist appears to be empty or unavailable.")
                     return
 
+                capped = len(entries) > PLAYLIST_CAP
+                entries = entries[:PLAYLIST_CAP]
                 queue = self.get_queue(ctx.guild.id)
                 # list.append always returns None, so `not queue.append(...)` is always True.
                 # This lets us filter and append in a single pass without a separate loop.
@@ -622,7 +669,8 @@ class MusicCog(commands.Cog):
                     if not self._is_queued(ctx.guild.id, title)
                     and not queue.append({"query": webpage_url, "title": title})
                 )
-                await ctx.send(f'Added **{added}** song(s) from playlist to queue.')
+                cap_note = f" *(capped at {PLAYLIST_CAP})*" if capped else ""
+                await ctx.send(f'Added **{added}** song(s) from playlist to queue{cap_note}.')
             return
 
         if 'spotify.com/track/' in query:
@@ -667,6 +715,23 @@ class MusicCog(commands.Cog):
         lines = [f"`{position + 1}.` {item['title']}" for position, item in enumerate(queue)]
         suffix = f"\n*Showing first 25 of {len(queue)} songs.*" if len(queue) > 25 else ""
         await ctx.send("**Queue:**\n" + "\n".join(lines) + suffix, view = QueueView(self, ctx))
+
+    @commands.hybrid_command(name = 'clear', description = 'Clear all songs from the queue.')
+    async def clear_cmd(self, ctx: commands.Context) -> None:
+        """
+        Empties the queue without stopping the currently playing song.
+
+        :param ctx: The invocation context.
+        """
+        if ctx.interaction is None:
+            await ctx.message.delete()
+        queue = self.get_queue(ctx.guild.id)
+        if not queue:
+            await ctx.send("The queue is already empty.")
+            return
+        count = len(queue)
+        queue.clear()
+        await ctx.send(f'Cleared **{count}** song(s) from the queue.')
 
     @commands.hybrid_command(name = 'shuffle', description = 'Shuffle the song queue.')
     async def shuffle_cmd(self, ctx: commands.Context) -> None:

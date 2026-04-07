@@ -48,11 +48,13 @@ class YouTubeService:
     def is_playlist_url(query: str) -> bool:
         """
         Returns True if the query looks like a YouTube playlist URL.
+        YouTube Mix/Radio playlists (list=RD…) are excluded because they are
+        auto-generated and functionally infinite — treat those as single videos.
 
         :param query: The raw user input.
-        :return: True when the URL contains a 'list=' parameter.
+        :return: True when the URL contains a 'list=' parameter that is not a Mix/Radio list.
         """
-        return query.startswith('http') and 'list=' in query
+        return query.startswith('http') and 'list=' in query and 'list=RD' not in query
 
     async def fetch_audio(self, query: str) -> tuple[str, str, str, str | None, str | None, int]:
         """
