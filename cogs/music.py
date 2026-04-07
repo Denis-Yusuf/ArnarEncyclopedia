@@ -419,11 +419,11 @@ class MusicCog(commands.Cog):
         embed = discord.Embed(
             title = title,
             url = webpage_url,
-            color = 0xFF0000,
+            color = 0xE0AA94,
         )
         embed.set_author(
             name = uploader or 'Unknown',
-            icon_url = 'https://www.youtube.com/s/desktop/28b0985e/img/favicon_32x32.png'
+            icon_url = 'https://github.com/Denis-Yusuf/ArnarEncyclopedia/blob/main/egg.png?raw=true'
         )
         if thumbnail:
             embed.set_image(url = thumbnail)
@@ -632,71 +632,6 @@ class MusicCog(commands.Cog):
         else:
             await self._play_in_voice(ctx, self.youtube.build_query(query))
 
-    @commands.hybrid_command(name = 'add', description = 'Add a song or playlist to the queue without interrupting playback.')
-    async def add_cmd(self, ctx: commands.Context, *, query: str) -> None:
-        """
-        Adds a song or playlist to the queue without interrupting whatever is currently playing.
-        Accepts YouTube URLs, playlist URLs, Spotify track URLs, and plain-text search queries.
-
-        :param ctx: The invocation context.
-        :param query: A YouTube URL, playlist URL, Spotify track URL, or search string.
-        """
-        if ctx.interaction is None:
-            await ctx.message.delete()
-
-        if self.youtube.is_playlist_url(query):
-            async with ctx.typing():
-                try:
-                    entries = await self.youtube.fetch_playlist(query)
-                except asyncio.TimeoutError:
-                    await ctx.send("Playlist fetch timed out. Try again.")
-                    return
-                except yt_dlp.utils.DownloadError:
-                    await ctx.send("Could not load that playlist.")
-                    return
-
-                if not entries:
-                    await ctx.send("The playlist appears to be empty or unavailable.")
-                    return
-
-                capped = len(entries) > PLAYLIST_CAP
-                entries = entries[:PLAYLIST_CAP]
-                queue = self.get_queue(ctx.guild.id)
-                # list.append always returns None, so `not queue.append(...)` is always True.
-                # This lets us filter and append in a single pass without a separate loop.
-                added = sum(
-                    1 for webpage_url, title in entries
-                    if not self._is_queued(ctx.guild.id, title)
-                    and not queue.append({"query": webpage_url, "title": title})
-                )
-                cap_note = f" *(capped at {PLAYLIST_CAP})*" if capped else ""
-                await ctx.send(f'Added **{added}** song(s) from playlist to queue{cap_note}.')
-            return
-
-        if 'spotify.com/track/' in query:
-            resolved = self.spotify.resolve_query(query)
-            if not resolved:
-                await ctx.send("No results found on Spotify.")
-                return
-            yt_query = f'ytsearch:{resolved}'
-        else:
-            yt_query = self.youtube.build_query(query)
-
-        async with ctx.typing():
-            try:
-                title, _ = await self.youtube.fetch_metadata(yt_query)
-            except asyncio.TimeoutError:
-                await ctx.send("Search timed out. Try again or use a direct URL.")
-                return
-            except yt_dlp.utils.DownloadError:
-                await ctx.send("No results found for that query.")
-                return
-            if self._is_queued(ctx.guild.id, title):
-                await ctx.send(f'**{title}** is already in the queue.')
-                return
-            self.get_queue(ctx.guild.id).append({"query": yt_query, "title": title})
-            position = len(self.get_queue(ctx.guild.id))
-            await ctx.send(f'Added to queue at position **{position}**: **{title}**')
 
     @commands.hybrid_command(name = 'queue', description = 'Show the queue. Use the dropdown to skip to a song.')
     async def queue_cmd(self, ctx: commands.Context) -> None:
