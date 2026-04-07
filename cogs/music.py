@@ -301,25 +301,54 @@ class MusicCog(commands.Cog):
             view.disable_all()
             try:
                 await msg.edit(view = view)
-            except discord.NotFound:
-                # Message was already deleted, nothing to update
+            except (discord.NotFound, discord.Forbidden):
+                # Message was deleted or we lost permission to edit it
                 pass
 
-    async def _stream(self, ctx: commands.Context, query: str, title: str, webpage_url: str, seek_offset: int = 0) -> None:
+    async def _stream(
+        self,
+        ctx: commands.Context,
+        query: str,
+        title: str,
+        webpage_url: str,
+        seek_offset: int = 0,
+        audio_url: str | None = None,
+        thumbnail: str | None = None,
+        uploader: str | None = None,
+        duration: int = 0,
+    ) -> None:
         """
-        Fetches the audio stream URL, starts playback, and posts the now-playing message.
+        Starts playback and posts the now-playing message.
         Blocks until the track finishes, then either seeks, loops, or advances the queue.
+        When ``audio_url`` is provided the yt-dlp fetch is skipped entirely; callers that
+        already fetched the full audio info should pass it through to avoid a redundant request.
+        Seek and loop paths intentionally omit it so a fresh stream URL is obtained each time
+        (YouTube stream URLs are time-limited and must not be reused after expiry).
 
         :param ctx: Used to access the voice client and send messages.
         :param query: yt-dlp compatible query string for the song.
         :param title: Display title of the song.
         :param webpage_url: YouTube watch URL shown under the now-playing message.
         :param seek_offset: Number of seconds to seek into the track before starting playback.
+        :param audio_url: Pre-fetched stream URL; if None, ``fetch_audio`` is called internally.
+        :param thumbnail: Pre-fetched thumbnail URL.
+        :param uploader: Pre-fetched uploader name.
+        :param duration: Pre-fetched duration in seconds.
         """
         self._cancel_disconnect(ctx.guild.id)
         await self._clear_now_playing(ctx.guild.id)
 
-        audio_url, _, _, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
+        if audio_url is None:
+            try:
+                audio_url, _, _, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
+            except asyncio.TimeoutError:
+                await ctx.send(f"Timed out fetching **{title}**, skipping.")
+                await self._play_next(ctx)
+                return
+            except yt_dlp.utils.DownloadError:
+                await ctx.send(f"Could not load **{title}**, skipping.")
+                await self._play_next(ctx)
+                return
 
         # Prepend -ss to before_options when seeking; a copy avoids mutating the module-level constant
         if seek_offset:
@@ -337,7 +366,13 @@ class MusicCog(commands.Cog):
         # The after callback runs in a non-async thread, so we just set the event
         # there and await it here in the coroutine.
         done = asyncio.Event()
-        ctx.voice_client.play(source, after = lambda error: done.set())
+
+        def after_playing(error):
+            if error:
+                print(f"[MusicCog] Playback error in guild {ctx.guild.id}: {error}")
+            done.set()
+
+        ctx.voice_client.play(source, after = after_playing)
 
         embed = discord.Embed(
             title = title,
@@ -350,7 +385,7 @@ class MusicCog(commands.Cog):
         )
         if thumbnail:
             embed.set_image(url = thumbnail)
-        msg = await ctx.send(content = f'Now playing: **{title}**\n{webpage_url}', embed = embed, view = view)
+        msg = await ctx.send(content = f'Now playing: **{title}**', embed = embed, view = view)
         self._now_playing_messages[ctx.guild.id] = msg
         self._now_playing_views[ctx.guild.id] = view
 
@@ -384,7 +419,7 @@ class MusicCog(commands.Cog):
         item = queue.pop(0)
         async with ctx.typing():
             try:
-                _, title, webpage_url, _, _, _ = await self.youtube.fetch_audio(item['query'])
+                audio_url, title, webpage_url, thumbnail, uploader, duration = await self.youtube.fetch_audio(item['query'])
             except asyncio.TimeoutError:
                 await ctx.send(f"Timed out fetching **{item['title']}**, skipping.")
                 # Recurse so the next item is attempted rather than leaving the queue stalled
@@ -394,7 +429,15 @@ class MusicCog(commands.Cog):
                 await ctx.send(f"Could not load **{item['title']}**, skipping.")
                 await self._play_next(ctx)
                 return
-            await self._stream(ctx, item['query'], title, webpage_url)
+        try:
+            await self._stream(
+                ctx, item['query'], title, webpage_url,
+                audio_url = audio_url, thumbnail = thumbnail, uploader = uploader, duration = duration,
+            )
+        except Exception as exc:
+            print(f"[MusicCog] Unexpected error during playback in guild {ctx.guild.id}: {exc}")
+            await ctx.send(f"Unexpected error playing **{title}**, skipping.")
+            await self._play_next(ctx)
 
     async def _play_in_voice(self, ctx: commands.Context, query: str) -> None:
         """
@@ -414,9 +457,28 @@ class MusicCog(commands.Cog):
         elif ctx.voice_client.channel != channel:
             await ctx.voice_client.move_to(channel)
 
+        if ctx.voice_client.is_playing():
+            # Something is already playing — only need the title to dedup and queue
+            async with ctx.typing():
+                try:
+                    title, _ = await self.youtube.fetch_metadata(query)
+                except asyncio.TimeoutError:
+                    await ctx.send("Search timed out. Try again or use a direct URL.")
+                    return
+                except yt_dlp.utils.DownloadError:
+                    await ctx.send("No results found for that query.")
+                    return
+            if self._is_queued(ctx.guild.id, title):
+                await ctx.send(f'**{title}** is already in the queue.')
+                return
+            self.get_queue(ctx.guild.id).append({"query": query, "title": title})
+            await ctx.send(f'Added to queue: **{title}**')
+            return
+
+        # Nothing playing — fetch the full audio info so _stream doesn't have to
         async with ctx.typing():
             try:
-                _, title, webpage_url, _, _, _ = await self.youtube.fetch_audio(query)
+                audio_url, title, webpage_url, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
             except asyncio.TimeoutError:
                 await ctx.send("Search timed out. Try again or use a direct URL.")
                 return
@@ -424,16 +486,11 @@ class MusicCog(commands.Cog):
                 await ctx.send("No results found for that query.")
                 return
 
-            if ctx.voice_client.is_playing():
-                if self._is_queued(ctx.guild.id, title):
-                    await ctx.send(f'**{title}** is already in the queue.')
-                    return
-                self.get_queue(ctx.guild.id).append({"query": query, "title": title})
-                await ctx.send(f'Added to queue: **{title}**')
-                return
-
-            ctx.voice_client.stop()
-            await self._stream(ctx, query, title, webpage_url)
+        ctx.voice_client.stop()
+        await self._stream(
+            ctx, query, title, webpage_url,
+            audio_url = audio_url, thumbnail = thumbnail, uploader = uploader, duration = duration,
+        )
 
     async def _enqueue_playlist(self, ctx: commands.Context, url: str) -> None:
         """
@@ -481,17 +538,29 @@ class MusicCog(commands.Cog):
 
             await ctx.send(f'Added **{added}** song(s) from playlist to queue.')
 
+            first_audio = None
             if not ctx.voice_client.is_playing() and first_entry:
-                # Pop the first entry out of the queue and stream it directly,
-                # so it doesn't get played twice if _play_next is also called
+                # Pop the first entry out of the queue and fetch its audio so we can
+                # stream it immediately after the typing context closes.
                 item = queue.pop(queue.index(first_entry))
                 try:
-                    _, title, webpage_url, _, _, _ = await self.youtube.fetch_audio(item['query'])
+                    first_audio = await self.youtube.fetch_audio(item['query'])
                 except (asyncio.TimeoutError, yt_dlp.utils.DownloadError):
                     await ctx.send(f"Could not load **{item['title']}**, skipping to next.")
                     await self._play_next(ctx)
                     return
-                await self._stream(ctx, item['query'], title, webpage_url)
+
+        if first_audio is not None:
+            audio_url, title, webpage_url, thumbnail, uploader, duration = first_audio
+            try:
+                await self._stream(
+                    ctx, item['query'], title, webpage_url,
+                    audio_url = audio_url, thumbnail = thumbnail, uploader = uploader, duration = duration,
+                )
+            except Exception as exc:
+                print(f"[MusicCog] Unexpected error during playback in guild {ctx.guild.id}: {exc}")
+                await ctx.send(f"Unexpected error playing **{title}**, skipping.")
+                await self._play_next(ctx)
 
     @commands.hybrid_command(name = 'play', description = 'Play from a YouTube URL, playlist, Spotify URL, or search query.')
     async def play_cmd(self, ctx: commands.Context, *, query: str) -> None:
