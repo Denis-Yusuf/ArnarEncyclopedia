@@ -126,7 +126,8 @@ class QueueSelect(discord.ui.Select):
         vc = self.ctx.voice_client
         if vc and (vc.is_playing() or vc.is_paused()):
             vc.stop()
-        await interaction.response.defer()
+        self.disabled = True
+        await interaction.response.edit_message(view = self.view)
 
 
 class QueueView(discord.ui.View):
@@ -275,7 +276,7 @@ class MusicCog(commands.Cog):
         self._cancel_disconnect(ctx.guild.id)
         await self._clear_now_playing(ctx.guild.id)
 
-        audio_url, _, _ = await self.youtube.fetch_audio(query)
+        audio_url, _, _, thumbnail, uploader = await self.youtube.fetch_audio(query)
         source = discord.PCMVolumeTransformer(
             discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), volume = 0.5
         )
@@ -288,7 +289,18 @@ class MusicCog(commands.Cog):
         done = asyncio.Event()
         ctx.voice_client.play(source, after = lambda error: done.set())
 
-        msg = await ctx.send(f'Now playing: **{title}**\n{webpage_url}', view = view)
+        embed = discord.Embed(
+            title = title,
+            url = webpage_url,
+            color = 0xFF0000,
+        )
+        embed.set_author(
+            name = uploader or 'Unknown',
+            icon_url = 'https://www.youtube.com/s/desktop/28b0985e/img/favicon_32x32.png'
+        )
+        if thumbnail:
+            embed.set_image(url = thumbnail)
+        msg = await ctx.send(content = f'Now playing: **{title}**\n{webpage_url}', embed = embed, view = view)
         self._now_playing_messages[ctx.guild.id] = msg
         self._now_playing_views[ctx.guild.id] = view
 
@@ -319,7 +331,7 @@ class MusicCog(commands.Cog):
         item = queue.pop(0)
         async with ctx.typing():
             try:
-                _, title, webpage_url = await self.youtube.fetch_audio(item['query'])
+                _, title, webpage_url, _, _ = await self.youtube.fetch_audio(item['query'])
             except asyncio.TimeoutError:
                 await ctx.send(f"Timed out fetching **{item['title']}**, skipping.")
                 # Recurse so the next item is attempted rather than leaving the queue stalled
@@ -345,13 +357,13 @@ class MusicCog(commands.Cog):
 
         channel = ctx.author.voice.channel
         if ctx.voice_client is None:
-            await channel.connect()
+            await channel.connect(self_deaf = True)
         elif ctx.voice_client.channel != channel:
             await ctx.voice_client.move_to(channel)
 
         async with ctx.typing():
             try:
-                _, title, webpage_url = await self.youtube.fetch_audio(query)
+                _, title, webpage_url, _, _ = await self.youtube.fetch_audio(query)
             except asyncio.TimeoutError:
                 await ctx.send("Search timed out. Try again or use a direct URL.")
                 return
@@ -384,7 +396,7 @@ class MusicCog(commands.Cog):
 
         channel = ctx.author.voice.channel
         if ctx.voice_client is None:
-            await channel.connect()
+            await channel.connect(self_deaf = True)
         elif ctx.voice_client.channel != channel:
             await ctx.voice_client.move_to(channel)
 
@@ -421,7 +433,7 @@ class MusicCog(commands.Cog):
                 # so it doesn't get played twice if _play_next is also called
                 item = queue.pop(queue.index(first_entry))
                 try:
-                    _, title, webpage_url = await self.youtube.fetch_audio(item['query'])
+                    _, title, webpage_url, _, _ = await self.youtube.fetch_audio(item['query'])
                 except (asyncio.TimeoutError, yt_dlp.utils.DownloadError):
                     await ctx.send(f"Could not load **{item['title']}**, skipping to next.")
                     await self._play_next(ctx)
