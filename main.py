@@ -19,8 +19,9 @@ class SaltBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """
-        Instantiates shared services, registers all cogs, and syncs slash commands.
+        Instantiates shared services and registers all cogs.
         Runs once after login before the bot starts processing events.
+        Command syncing happens in on_ready once guild list is available.
         """
         youtube = YouTubeService()
         spotify = SpotifyService(
@@ -30,10 +31,28 @@ class SaltBot(commands.Bot):
         await self.add_cog(MusicCog(self, youtube, spotify))
         await self.add_cog(Eggcog(self))
         await self.add_cog(PresenceCog(self))
-        await self.tree.sync()  # registers slash commands globally
+        # Remove any previously registered global commands from Discord's API.
+        # We save and restore the in-memory commands so copy_global_to still works in on_ready.
+        global_commands = self.tree.get_commands()
+        self.tree.clear_commands(guild = None)
+        await self.tree.sync()
+        for command in global_commands:
+            self.tree.add_command(command)
+
+    async def on_ready(self) -> None:
+        """Copies global commands to each guild and syncs, so they appear instantly."""
+        for guild in self.guilds:
+            self.tree.copy_global_to(guild = guild)
+            await self.tree.sync(guild = guild)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        """Syncs slash commands when the bot is added to a new server."""
+        self.tree.copy_global_to(guild = guild)
+        await self.tree.sync(guild = guild)
 
 
 async def main() -> None:
+    discord.utils.setup_logging()
     intents = discord.Intents.default()
     intents.message_content = True
 
@@ -41,4 +60,9 @@ async def main() -> None:
         await bot.start(os.getenv("TOKEN"))
 
 
-asyncio.run(main())
+try:
+    asyncio.run(main())
+except KeyboardInterrupt:
+    pass
+finally:
+    os._exit(0)

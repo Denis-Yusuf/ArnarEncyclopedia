@@ -12,14 +12,17 @@ from services.youtube import FFMPEG_OPTIONS, YouTubeService
 class NowPlayingView(discord.ui.View):
     """Buttons that sit under the now-playing message so you can control playback without typing commands."""
 
-    def __init__(self, cog: 'MusicCog', ctx: commands.Context) -> None:
+    def __init__(self, cog: 'MusicCog', ctx: commands.Context, duration: int = 0) -> None:
         """
         :param cog: Used to access and mutate playback state.
         :param ctx: Used to resolve the voice client and guild.
+        :param duration: Song duration in seconds; if provided, a seek select is added.
         """
         super().__init__(timeout = None)
         self.cog = cog
         self.ctx = ctx
+        if duration > 0:
+            self.add_item(SeekSelect(cog, ctx, duration))
 
     def disable_all(self) -> None:
         """Greys out all buttons once there's nothing left to control."""
@@ -86,6 +89,7 @@ class NowPlayingView(discord.ui.View):
             self.cog.get_queue(self.ctx.guild.id).clear()
             self.cog.set_loop(self.ctx.guild.id, False)
             self.cog._current.pop(self.ctx.guild.id, None)
+            self.cog._seek_to.pop(self.ctx.guild.id, None)
             self.cog._cancel_disconnect(self.ctx.guild.id)
             self.ctx.voice_client.stop()
             await self.ctx.voice_client.disconnect()
@@ -144,6 +148,43 @@ class QueueView(discord.ui.View):
             self.add_item(QueueSelect(cog, ctx, queue))
 
 
+class SeekSelect(discord.ui.Select):
+    """Dropdown that lets you jump to an evenly-spaced timestamp in the current song."""
+
+    def __init__(self, cog: 'MusicCog', ctx: commands.Context, duration: int) -> None:
+        """
+        :param cog: Used to set the seek target and stop the voice client.
+        :param ctx: Used to resolve the voice client and guild.
+        :param duration: Total song duration in seconds, used to generate timestamp options.
+        """
+        self.cog = cog
+        self.ctx = ctx
+        # Aim for up to 24 evenly spaced options; minimum interval is 15 seconds
+        count = min(24, max(1, duration // 15))
+        interval = duration // count
+        options = [
+            discord.SelectOption(
+                label = f"{(i * interval) // 60}:{(i * interval) % 60:02d}",
+                value = str(i * interval),
+            )
+            for i in range(count)
+        ]
+        super().__init__(placeholder = 'Seek to...', options = options, row = 1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """
+        Sets the seek target on the cog then stops the voice client.
+        ``_stream`` picks up ``_seek_to`` after ``done.wait()`` and restarts from that offset.
+
+        :param interaction: The interaction created by the select menu.
+        """
+        vc = self.ctx.voice_client
+        if vc and (vc.is_playing() or vc.is_paused()):
+            self.cog._seek_to[self.ctx.guild.id] = int(self.values[0])
+            vc.stop()
+        await interaction.response.defer()
+
+
 class MusicCog(commands.Cog):
     """Handles all music commands and keeps per-guild playback state."""
 
@@ -163,6 +204,7 @@ class MusicCog(commands.Cog):
         self._disconnect_tasks: dict[int, asyncio.Task] = {}
         self._now_playing_messages: dict[int, discord.Message] = {}
         self._now_playing_views: dict[int, NowPlayingView] = {}
+        self._seek_to: dict[int, int] = {}
 
     def get_queue(self, guild_id: int) -> list[dict]:
         """
@@ -263,25 +305,33 @@ class MusicCog(commands.Cog):
                 # Message was already deleted, nothing to update
                 pass
 
-    async def _stream(self, ctx: commands.Context, query: str, title: str, webpage_url: str) -> None:
+    async def _stream(self, ctx: commands.Context, query: str, title: str, webpage_url: str, seek_offset: int = 0) -> None:
         """
         Fetches the audio stream URL, starts playback, and posts the now-playing message.
-        Blocks until the track finishes, then either loops or advances the queue.
+        Blocks until the track finishes, then either seeks, loops, or advances the queue.
 
         :param ctx: Used to access the voice client and send messages.
         :param query: yt-dlp compatible query string for the song.
         :param title: Display title of the song.
         :param webpage_url: YouTube watch URL shown under the now-playing message.
+        :param seek_offset: Number of seconds to seek into the track before starting playback.
         """
         self._cancel_disconnect(ctx.guild.id)
         await self._clear_now_playing(ctx.guild.id)
 
-        audio_url, _, _, thumbnail, uploader = await self.youtube.fetch_audio(query)
+        audio_url, _, _, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
+
+        # Prepend -ss to before_options when seeking; a copy avoids mutating the module-level constant
+        if seek_offset:
+            ffmpeg_opts = {**FFMPEG_OPTIONS, 'before_options': f'-ss {seek_offset} ' + FFMPEG_OPTIONS['before_options']}
+        else:
+            ffmpeg_opts = FFMPEG_OPTIONS
+
         source = discord.PCMVolumeTransformer(
-            discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS), volume = 0.5
+            discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts), volume = 0.5
         )
-        self._current[ctx.guild.id] = {"query": query, "title": title}
-        view = NowPlayingView(self, ctx)
+        self._current[ctx.guild.id] = {"query": query, "title": title, "duration": duration}
+        view = NowPlayingView(self, ctx, duration)
 
         # asyncio.Event lets us await the end of playback without polling.
         # The after callback runs in a non-async thread, so we just set the event
@@ -306,7 +356,10 @@ class MusicCog(commands.Cog):
 
         await done.wait()
 
-        if self.is_looping(ctx.guild.id):
+        seek = self._seek_to.pop(ctx.guild.id, None)
+        if seek is not None and ctx.voice_client:
+            await self._stream(ctx, query, title, webpage_url, seek_offset = seek)
+        elif self.is_looping(ctx.guild.id):
             current = self.get_current(ctx.guild.id)
             if current:
                 await self._stream(ctx, current['query'], current['title'], webpage_url)
@@ -331,7 +384,7 @@ class MusicCog(commands.Cog):
         item = queue.pop(0)
         async with ctx.typing():
             try:
-                _, title, webpage_url, _, _ = await self.youtube.fetch_audio(item['query'])
+                _, title, webpage_url, _, _, _ = await self.youtube.fetch_audio(item['query'])
             except asyncio.TimeoutError:
                 await ctx.send(f"Timed out fetching **{item['title']}**, skipping.")
                 # Recurse so the next item is attempted rather than leaving the queue stalled
@@ -363,7 +416,7 @@ class MusicCog(commands.Cog):
 
         async with ctx.typing():
             try:
-                _, title, webpage_url, _, _ = await self.youtube.fetch_audio(query)
+                _, title, webpage_url, _, _, _ = await self.youtube.fetch_audio(query)
             except asyncio.TimeoutError:
                 await ctx.send("Search timed out. Try again or use a direct URL.")
                 return
@@ -433,46 +486,37 @@ class MusicCog(commands.Cog):
                 # so it doesn't get played twice if _play_next is also called
                 item = queue.pop(queue.index(first_entry))
                 try:
-                    _, title, webpage_url, _, _ = await self.youtube.fetch_audio(item['query'])
+                    _, title, webpage_url, _, _, _ = await self.youtube.fetch_audio(item['query'])
                 except (asyncio.TimeoutError, yt_dlp.utils.DownloadError):
                     await ctx.send(f"Could not load **{item['title']}**, skipping to next.")
                     await self._play_next(ctx)
                     return
                 await self._stream(ctx, item['query'], title, webpage_url)
 
-    @commands.hybrid_command(name = 'y', description = 'Play from a YouTube URL, playlist URL, or search query.')
-    async def youtube_cmd(self, ctx: commands.Context, *, query: str) -> None:
+    @commands.hybrid_command(name = 'play', description = 'Play from a YouTube URL, playlist, Spotify URL, or search query.')
+    async def play_cmd(self, ctx: commands.Context, *, query: str) -> None:
         """
-        Plays a YouTube URL, playlist URL, or search query.
-        Playlist URLs are detected by the presence of 'list=' and routed to _enqueue_playlist.
+        Universal play command. Routing priority:
+        1. YouTube playlist URL (contains 'list=') → _enqueue_playlist
+        2. Spotify track URL (contains 'spotify.com') → resolve via Spotify, then search YouTube
+        3. Everything else → YouTube URL or search via _play_in_voice
 
         :param ctx: The invocation context.
-        :param query: A YouTube URL, playlist URL, or plain-text search string.
+        :param query: A YouTube URL, playlist URL, Spotify track URL, or plain-text search string.
         """
         if ctx.interaction is None:
             await ctx.message.delete()
         if self.youtube.is_playlist_url(query):
             await self._enqueue_playlist(ctx, query)
+        elif 'spotify.com' in query:
+            search_query = self.spotify.resolve_query(query)
+            if not search_query:
+                await ctx.send("No results found on Spotify.")
+                return
+            await ctx.send(f'Found: **{search_query}** — searching YouTube...')
+            await self._play_in_voice(ctx, f'ytsearch:{search_query}')
         else:
             await self._play_in_voice(ctx, self.youtube.build_query(query))
-
-    @commands.hybrid_command(name = 's', description = 'Play from a Spotify URL or search query.')
-    async def spotify_cmd(self, ctx: commands.Context, *, query: str) -> None:
-        """
-        Resolves a Spotify URL or search query to an 'Artist - Title' string,
-        then searches YouTube and plays the result.
-
-        :param ctx: The invocation context.
-        :param query: A Spotify track URL or plain-text search string.
-        """
-        if ctx.interaction is None:
-            await ctx.message.delete()
-        search_query = self.spotify.resolve_query(query)
-        if not search_query:
-            await ctx.send("No results found on Spotify.")
-            return
-        await ctx.send(f'Found: **{search_query}** — searching YouTube...')
-        await self._play_in_voice(ctx, f'ytsearch:{search_query}')
 
     @commands.hybrid_command(name = 'add', description = 'Add a song or playlist to the queue without interrupting playback.')
     async def add_cmd(self, ctx: commands.Context, *, query: str) -> None:
@@ -654,6 +698,7 @@ class MusicCog(commands.Cog):
             self.get_queue(ctx.guild.id).clear()
             self.set_loop(ctx.guild.id, False)
             self._current.pop(ctx.guild.id, None)
+            self._seek_to.pop(ctx.guild.id, None)
             self._cancel_disconnect(ctx.guild.id)
             await self._clear_now_playing(ctx.guild.id)
             ctx.voice_client.stop()

@@ -54,13 +54,13 @@ class YouTubeService:
         """
         return query.startswith('http') and 'list=' in query
 
-    async def fetch_audio(self, query: str) -> tuple[str, str, str, str | None, str | None]:
+    async def fetch_audio(self, query: str) -> tuple[str, str, str, str | None, str | None, int]:
         """
         Asks yt-dlp for the best audio stream for a query.
         Runs in a thread executor so it doesn't block the event loop.
 
         :param query: A YouTube URL or yt-dlp search string (e.g. 'ytsearch:lofi hip hop').
-        :return: A tuple of (stream_url, title, webpage_url, thumbnail_url, uploader).
+        :return: A tuple of (stream_url, title, webpage_url, thumbnail_url, uploader, duration_seconds).
         :raises asyncio.TimeoutError: When yt-dlp takes too long to respond.
         :raises yt_dlp.utils.DownloadError: When yt-dlp cannot find any results.
         """
@@ -74,7 +74,7 @@ class YouTubeService:
             if 'entries' in info:
                 info = info['entries'][0]
             uploader = info.get('uploader') or info.get('channel')
-            return info['url'], info['title'], info['webpage_url'], info.get('thumbnail'), uploader
+            return info['url'], info['title'], info['webpage_url'], info.get('thumbnail'), uploader, info.get('duration') or 0
 
     async def fetch_metadata(self, query: str) -> tuple[str, str]:
         """
