@@ -423,7 +423,7 @@ class MusicCog(commands.Cog):
         )
         embed.set_author(
             name = uploader or 'Unknown',
-            icon_url = 'https://raw.githubusercontent.com/Denis-Yusuf/ArnarEncyclopedia/main/favicon.ico'
+            icon_url = 'https://raw.githubusercontent.com/Denis-Yusuf/ArnarEncyclopedia/main/egg.png'
         )
         if thumbnail:
             embed.set_image(url = thumbnail)
