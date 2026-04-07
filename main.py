@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 import discord
@@ -32,8 +33,12 @@ class SaltBot(commands.Bot):
         await self.tree.sync()  # registers slash commands globally
 
 
-intents = discord.Intents.default()
-intents.message_content = True
+async def main() -> None:
+    intents = discord.Intents.default()
+    intents.message_content = True
 
-bot = SaltBot(command_prefix = '/', intents = intents)
-bot.run(os.getenv("TOKEN"))
+    async with SaltBot(command_prefix = '/', intents = intents) as bot:
+        await bot.start(os.getenv("TOKEN"))
+
+
+asyncio.run(main())

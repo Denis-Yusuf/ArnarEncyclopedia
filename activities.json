@@ -1,9 +1,10 @@
 [
-  { "type": "streaming", "name": "Sex with Hitler", "url": "https://www.twitch.tv/eggbot"},
-  { "type": "listening", "name": "Gooning & Mooning - Harry Heatwaves", "large_image": "1490770966647668926", "small_image": "1490771167437656165"},
-  { "type": "watching",  "name": "I Made a Game Where an AI Tortures You"},
-  { "type": "playing",   "name": "Sex with Hitler"},
-  { "type": "competing", "name": "kaasje"},
-  { "type": "listening", "name": "Heat Waves - Glass Animals", "large_image": "1490770966647668926", "small_image": "1490771167437656165"},
-  { "type": "watching",  "name": "egg hatching 4k"}
+  { "type": "streaming", "name": "🔴 Sex with Hitler", "url": "https://www.twitch.tv/eggbot"},
+  { "type": "listening", "name": "🎵 Gooning & Mooning - Harry Heatwaves"},
+  { "type": "watching",  "name": "▶️ I Made a Game Where an AI Tortures You"},
+  { "type": "playing",   "name": "🕹️ Sex with Hitler"},
+  { "type": "competing", "name": "🏆 kaasje"},
+  { "type": "listening", "name": "🎵 Heat Waves - Glass Animals"},
+  { "type": "watching",  "name": "▶️ egg hatching 4k"},
+  { "type": "watching",  "name": "▶️ The Bay Harbour Gooner"}
 ]
