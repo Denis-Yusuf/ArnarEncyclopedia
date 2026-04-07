@@ -17,6 +17,10 @@ class SaltBot(commands.Bot):
     """The bot. Wires up services and cogs on startup."""
 
     async def setup_hook(self) -> None:
+        """
+        Instantiates shared services, registers all cogs, and syncs slash commands.
+        Runs once after login before the bot starts processing events.
+        """
         youtube = YouTubeService()
         spotify = SpotifyService(
             client_id = os.getenv("SPOTIFY_CLIENT_ID"),

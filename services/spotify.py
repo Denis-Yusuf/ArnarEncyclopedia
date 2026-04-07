@@ -19,15 +19,18 @@ class SpotifyService:
 
     def resolve_query(self, query: str) -> str | None:
         """
-        Takes a Spotify URL or plain search string and returns 'Artist - Title'.
+        Takes a Spotify URL or plain search string and returns an 'Artist - Title' string
+        suitable for passing to a YouTube search.
 
         :param query: A Spotify track URL or plain-text search query.
         :return: A formatted 'Artist - Title' string, or None if nothing was found.
         """
         track_match = re.search(r'spotify\.com/track/([a-zA-Z0-9]+)', query)
         if track_match:
+            # Fetch the track directly by ID extracted from the URL
             track = self._sp.track(track_match.group(1))
         else:
+            # Fall back to a keyword search and take the top result
             results = self._sp.search(q = query, type = 'track', limit = 1)
             items = results['tracks']['items']
             if not items:
