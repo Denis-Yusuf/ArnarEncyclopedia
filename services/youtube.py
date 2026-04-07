@@ -1,4 +1,5 @@
 import asyncio
+import re
 
 import yt_dlp
 
@@ -38,11 +39,19 @@ class YouTubeService:
     def build_query(query: str) -> str:
         """
         Passes URLs through as-is; wraps plain text in a ytsearch: prefix.
+        YouTube Mix/Radio URLs (list=RD…, start_radio=1) are reduced to a plain
+        watch URL so yt-dlp doesn't stall trying to resolve the radio session.
 
         :param query: A raw YouTube URL or plain-text search string.
         :return: The original URL if it starts with 'http', otherwise a 'ytsearch:' prefixed string.
         """
-        return query if query.startswith('http') else f'ytsearch:{query}'
+        if query.startswith('http'):
+            if 'list=RD' in query or 'start_radio=1' in query:
+                match = re.search(r'[?&]v=([^&]+)', query)
+                if match:
+                    return f'https://www.youtube.com/watch?v={match.group(1)}'
+            return query
+        return f'ytsearch:{query}'
 
     @staticmethod
     def is_playlist_url(query: str) -> bool:
