@@ -6,7 +6,7 @@ from discord.ext import commands, tasks
 from datetime import datetime, time
 
 DEFAULT_MESSAGE = "{mention} kys"
-CHECKING_TIME = time(hour=5, minute=0)
+CHECKING_TIME = time(hour=0, minute=0)
 
 class DateConverter(commands.Converter[datetime.datetime]):
     async def convert(self, ctx: commands.Context, value: str) -> datetime.datetime:
@@ -66,4 +66,26 @@ async def birthday_remove( self, ctx: commands.Context, user: discord.Member = N
     else:
         raise commands.BadArgument(f"User {uid} not found.")
 
+@tasks.loop(time=CHECKING_TIME)
+async def check_birthdays(self):
+    today = datetime.datetime.now().strftime("%d-%m")
 
+    channel = self.bot.get_channel(os.getenv("BIRTHDAY_CHANNEL_ID"))
+    if channel is None:
+        raise ValueError("channel not found nigga")
+
+    for user_id, data in self.birthdays.items():
+        date: data["date"]
+
+        if date == today:
+            member = channel.guild.get_member(int(user_id))
+            if member is None:
+                continue
+
+            message = data["message"]
+            if message is None:
+                message = DEFAULT_MESSAGE
+            await channel.send(f"{message}")
+@check_birthdays.before_loop
+async def before_check(self):
+    await self.bot.wait_until_ready()
