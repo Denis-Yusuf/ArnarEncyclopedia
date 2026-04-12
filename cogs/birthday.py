@@ -41,19 +41,26 @@ class BirthdaySchedulerCog(commands.Cog):
         self.check_birthdays.stop()
 
 
-
 @commands.hybrid_command(name="birthday", description="Add or update a birthday")
 async def birthday_add(self, ctx: commands.Context, date: DateConverter, user: discord.Member = None, *, message: str = None ) -> None:
     user = user or ctx.author
     uid = user.id
 
-    existing_message = self.birthdays(uid, {}).get("message")
-    self.birthdays[uid] = {
-        "date": date,
-        "message": message or existing_message,
-    }
-    _save_birthdays(self.birthdays)
-    await ctx.send(f"saved {user}'s birthday", ephemeral=True)
+    if self.birthdays.get(uid) is None:
+        self.birthdays[uid] = {
+            "date": date,
+            "message": message or DEFAULT_MESSAGE,
+        }
+        _save_birthdays(self.birthdays)
+        await ctx.send(f"saved {user.name}'s birthday", ephemeral=True)
+    else:
+        existing_message = self.birthdays(uid, {}).get("message")
+        self.birthdays[uid] = {
+            "date": date,
+            "message": message or existing_message,
+        }
+        _save_birthdays(self.birthdays)
+        await ctx.send(f"updated {user.name}'s birthday", ephemeral=True)
 
 @commands.hybrid_command(name="birthday remove", description="remove a birthday")
 async def birthday_remove( self, ctx: commands.Context, user: discord.Member = None)-> None:
@@ -65,6 +72,37 @@ async def birthday_remove( self, ctx: commands.Context, user: discord.Member = N
         await ctx.send(f"removed {user}'s birthday", ephemeral=True)
     else:
         raise commands.BadArgument(f"User {uid} not found.")
+
+@commands.hybrid_command(name="birthday list", description="shows a list of all birthdays" )
+async def birthday_list(self, ctx: commands.Context) -> None:
+    if not self.birthdays:
+        await ctx.send(f"no birthdays saved")
+
+    cells = []
+    for uid, data in self.birthdays:
+        user = ctx.guild.get_member(int(uid))
+        if user is None:
+            user = uid
+
+        date = data["date"]
+        message = data["message"]
+        cells.append(f"{user.name}: {date} - {message}")
+
+    await ctx.send("**Birthdays:**\n" + "\n".join(cells))
+
+@commands.hybrid_command(name="birthday get", description="shows birthday of a specific user")
+async def birthday_get(self, ctx: commands.Context, user: discord.Member = None) -> None:
+    user = user or ctx.author
+    uid = user.id
+
+    if uid in self.birthdays:
+        birthday = self.birthdays[uid]
+        date = birthday["date"]
+        message = birthday["message"]
+        await ctx.send(f"{user.name} - {date} - {message}")
+    else:
+        await ctx.send("No birthday found")
+
 
 @tasks.loop(time=CHECKING_TIME)
 async def check_birthdays(self):
@@ -86,6 +124,7 @@ async def check_birthdays(self):
             if message is None:
                 message = DEFAULT_MESSAGE
             await channel.send(f"{message}")
+
 @check_birthdays.before_loop
 async def before_check(self):
     await self.bot.wait_until_ready()
