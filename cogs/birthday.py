@@ -97,31 +97,57 @@ class BirthdaySchedulerCog(commands.Cog):
     @commands.hybrid_command(name="birthday-list", description="shows a list of all birthdays" )
     async def birthday_list(self, ctx: commands.Context) -> None:
         if not self.birthdays:
-            await ctx.send(f"**no birthdays saved**")
+            embed = discord.Embed(
+                description="No birthdays saved.",
+                color=discord.Color.orange()
+            )
+            await ctx.send(embed=embed)
             return
 
-        cells = []
+        embed = discord.Embed(
+            title="🎂 Birthday calendar",
+            color=discord.Color.blurple()
+        )
         for uid, data in self.birthdays.items():
             user = await ctx.guild.fetch_member(int(uid))
-            name = user.name if user else uid
+            name = user.display_name if user else f"Unknown ({uid})"
             date = data["date"]
-            message = data["message"]
-            cells.append(f"**{name}**: {date} - {message}")
+            message = data["message"] if data["message"] != "DEFAULT" else DEFAULT_MESSAGE
+            embed.add_field(
+                name=f"{name} — {date}",
+                value=f"_{message}_",
+                inline=False
+            )
 
-        await ctx.send("**Birthdays:**\n" + "\n".join(cells))
+        embed.set_footer(text=f"{len(self.birthdays)} birthday(s) saved")
+        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="birthday-get", description="shows birthday of a specific user")
     async def birthday_get(self, ctx: commands.Context, user: discord.Member = None) -> None:
         user = user or ctx.author
-        uid = str(user.id)
+        uid = (str(user.id))
 
-        if uid in self.birthdays:
-            birthday = self.birthdays[uid]
-            date = birthday["date"]
-            message = birthday["message"]
-            await ctx.send(f"**{user.name}**: {date} - {message}")
-        else:
-            await ctx.send("**No birthday found**")
+        if uid not in self.birthdays:
+            embed = discord.Embed(
+                description=f"No birthday found for {user.display_name}.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+            return
+
+        birthday = self.birthdays[uid]
+        date = birthday["date"]
+        message = birthday["message"] if birthday["message"] != "DEFAULT" else DEFAULT_MESSAGE
+
+        embed = discord.Embed(
+            title=f"🎂 {user.display_name}'s birthday",
+            color=discord.Color.blurple()
+        )
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(name="Date", value=date, inline=True)
+        embed.add_field(name="Message", value=f"_{message}_", inline=False)
+
+        await ctx.send(embed=embed)
 
 
     @tasks.loop(time=CHECKING_TIME)
