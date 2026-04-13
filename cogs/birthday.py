@@ -12,10 +12,7 @@ CHECKING_TIME = dt.time(hour = 0, minute = 0)
 
 class DateTransformer(app_commands.Transformer):
     async def transform(self, interaction: discord.Interaction, value: str) -> dt.datetime:
-            try:
-                return dt.datetime.strptime(value, "%d-%m")
-            except ValueError:
-                raise commands.BadArgument("Ongeldig formaat nigga. Gebruik `dd-mm`.")
+        return dt.datetime.strptime(value, "%d-%m")
 
 def _load_birthdays(path: str = "birthdays.json"):
     file = Path(path)
@@ -45,10 +42,11 @@ class BirthdaySchedulerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.birthdays: dict = _load_birthdays()
-        self.check_birthdays.start()
         self.birthday_channel = int(os.getenv("BIRTHDAY_CHANNEL_ID"))
 
-    def cog_unload(self):
+    def cog_load(self) -> None:
+        self.check_birthdays.start()
+    def cog_unload(self) -> None:
         self.check_birthdays.stop()
 
     @commands.hybrid_command(name="birthday-default-message", description="set the default message")
@@ -98,22 +96,21 @@ class BirthdaySchedulerCog(commands.Cog):
             del self.birthdays[uid]
             await ctx.send(f"removed <@{uid}>'s birthday", ephemeral=True)
         else:
-            raise commands.BadArgument(f"**User: {uid}** not found.")
+            await ctx.send(f"**User: {uid}** not found.")
 
     @commands.hybrid_command(name="birthday-list", description="shows a list of all birthdays" )
     async def birthday_list(self, ctx: commands.Context) -> None:
         if not self.birthdays:
             await ctx.send(f"no birthdays saved")
+            return
 
         cells = []
         for uid, data in self.birthdays.items():
             user = ctx.guild.get_member(int(uid))
-            if user is None:
-                user = uid
-
+            name = user.name if user else uid
             date = data["date"]
             message = data["message"]
-            cells.append(f"**{user.name if user is not None else user}**: {date} - {message}")
+            cells.append(f"**{name}**: {date} - {message}")
 
         await ctx.send("**Birthdays:**\n" + "\n".join(cells))
 
