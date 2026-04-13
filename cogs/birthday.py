@@ -8,6 +8,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 
 DEFAULT_MESSAGE = "Happy Birthday %n!"
+DEFAULT_ROLE = "everyone"
 CHECKING_TIME = dt.time(hour = 0, minute = 0)
 
 class DateTransformer(app_commands.Transformer):
@@ -34,7 +35,7 @@ def _save_birthdays(data: dict, path: str = "birthdays.json") -> None:
 
 def _replace_placeholders(message: str, uid: str) -> str:
     message = str.replace(message, "%n", f"<@{uid}>")
-    message = str.replace(message, "%e", f"@everyone")
+    message = str.replace(message, "%r", f"<@{DEFAULT_ROLE}>")
     return message
 
 class BirthdaySchedulerCog(commands.Cog):
@@ -64,7 +65,23 @@ class BirthdaySchedulerCog(commands.Cog):
             description=f"The default birthday message has been set to:\n\n**{DEFAULT_MESSAGE}**",
             color=discord.Color.blurple()
         )
-        embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %e to mention everyone")
+        embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %r to mention the default role")
+        await ctx.send(embed=embed)
+
+    #@commands.has_guild_permissions(administrator=True)
+    @commands.hybrid_command(name="birthday-default-role", description="set the default role")
+    async def birthday_set_default_role(self, ctx: commands.Context, *, role: str = None) -> None:
+        global DEFAULT_ROLE
+        if role is None:
+            DEFAULT_ROLE = "everyone"
+        else:
+            DEFAULT_ROLE = role
+
+        embed = discord.Embed(
+            title="Default Role Updated",
+            description=f"The default birthday mention role has been set to:\n\n**{DEFAULT_ROLE}**",
+            color=discord.Color.blurple()
+        )
         await ctx.send(embed=embed)
 
     #@commands.has_guild_permissions(administrator=True)
@@ -87,7 +104,7 @@ class BirthdaySchedulerCog(commands.Cog):
             embed.set_thumbnail(url=user.display_avatar.url)
             embed.add_field(name="📅 Date", value=date.strftime("%d-%m"), inline=True)
             embed.add_field(name="💬 Message", value=f"_{DEFAULT_MESSAGE if 'DEFAULT' else message}_", inline=False)
-            embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %e to mention everyone.\n DEFAULT will use the default set message.")
+            embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %r to mention the default role.\n DEFAULT will use the default set message.")
             await ctx.send(embed=embed)
         else:
             existing_message = self.birthdays.get(uid, {}).get("message")
@@ -104,7 +121,7 @@ class BirthdaySchedulerCog(commands.Cog):
             embed.set_thumbnail(url=user.display_avatar.url)
             embed.add_field(name="📅 Date", value=date.strftime("%d-%m"), inline=True)
             embed.add_field(name="💬 Message", value=f"_{message or existing_message}_", inline=False)
-            embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %e to mention everyone.\n DEFAULT will use the default set message.")
+            embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %r to mention the default role.\n DEFAULT will use the default set message.")
             await ctx.send(embed=embed)
 
     #@commands.has_guild_permissions(administrator=True)
