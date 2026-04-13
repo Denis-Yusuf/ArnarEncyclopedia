@@ -64,7 +64,7 @@ class BirthdaySchedulerCog(commands.Cog):
                 if data["message"] == oldmsg:
                     self.birthdays[uid]["message"] = DEFAULT_MESSAGE
         _save_birthdays(self.birthdays)
-        await ctx.send(f"changed default message to: {DEFAULT_MESSAGE}", ephemeral=True)
+        await ctx.send(f"Default message set to: {DEFAULT_MESSAGE}")
 
     @commands.hybrid_command(name="birthday-set", description="Add or update a birthday")
     async def birthday_set(self, ctx: commands.Context,date: app_commands.Transform[dt.datetime, DateTransformer], user: discord.Member = None, *, message: str = None ) -> None:
@@ -96,12 +96,12 @@ class BirthdaySchedulerCog(commands.Cog):
             del self.birthdays[uid]
             await ctx.send(f"removed <@{uid}>'s birthday", ephemeral=True)
         else:
-            await ctx.send(f"**User: {uid}** not found.")
+            await ctx.send(f"**uid:{uid}** not found.")
 
     @commands.hybrid_command(name="birthday-list", description="shows a list of all birthdays" )
     async def birthday_list(self, ctx: commands.Context) -> None:
         if not self.birthdays:
-            await ctx.send(f"no birthdays saved")
+            await ctx.send(f"**no birthdays saved**")
             return
 
         cells = []
