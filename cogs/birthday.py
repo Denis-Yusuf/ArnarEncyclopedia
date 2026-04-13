@@ -50,7 +50,7 @@ class BirthdaySchedulerCog(commands.Cog):
     def cog_unload(self) -> None:
         self.check_birthdays.stop()
 
-    @commands.has_guild_permissions(administrator=True)
+    #@commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-default-message", description="set the default message")
     async def birthday_set_default_message(self, ctx: commands.Context, *, message: str = None) -> None:
         global DEFAULT_MESSAGE
@@ -58,9 +58,16 @@ class BirthdaySchedulerCog(commands.Cog):
             DEFAULT_MESSAGE = "Happy Birthday %n!"
         else:
             DEFAULT_MESSAGE = message
-        await ctx.send(f"Default message set to: {DEFAULT_MESSAGE}")
 
-    @commands.has_guild_permissions(administrator=True)
+        embed = discord.Embed(
+            title="Default Birthday Message Updated",
+            description=f"The default birthday message has been set to:\n\n**{DEFAULT_MESSAGE}**",
+            color=discord.Color.blurple()
+        )
+        embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %e to mention everyone")
+        await ctx.send(embed=embed)
+
+    #@commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-set", description="Add or update a birthday")
     async def birthday_set(self, ctx: commands.Context,date: app_commands.Transform[dt.datetime, DateTransformer], user: discord.Member = None, *, message: str = None ) -> None:
         user = user or ctx.author
@@ -72,7 +79,16 @@ class BirthdaySchedulerCog(commands.Cog):
                 "message":  message or "DEFAULT",
             }
             _save_birthdays(self.birthdays)
-            await ctx.send(f"saved <@{uid}>'s birthday", ephemeral=True)
+
+            embed = discord.Embed(
+                title=f"🎂 {user.display_name}'s birthday saved",
+                color=discord.Color.greyple()
+            )
+            embed.set_thumbnail(url=user.display_avatar.url)
+            embed.add_field(name="📅 Date", value=date.strftime("%d-%m"), inline=True)
+            embed.add_field(name="💬 Message", value=f"_{DEFAULT_MESSAGE if 'DEFAULT' else message}_", inline=False)
+            embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %e to mention everyone.\n DEFAULT will use the default set message.")
+            await ctx.send(embed=embed)
         else:
             existing_message = self.birthdays.get(uid, {}).get("message")
             self.birthdays[uid] = {
@@ -80,9 +96,18 @@ class BirthdaySchedulerCog(commands.Cog):
                 "message": message or existing_message,
             }
             _save_birthdays(self.birthdays)
-            await ctx.send(f"updated <@{uid}>'s birthday", ephemeral=True)
 
-    @commands.has_guild_permissions(administrator=True)
+            embed = discord.Embed(
+                title=f"🎂 {user.display_name}'s birthday updated",
+                color=discord.Color.blurple()
+            )
+            embed.set_thumbnail(url=user.display_avatar.url)
+            embed.add_field(name="📅 Date", value=date.strftime("%d-%m"), inline=True)
+            embed.add_field(name="💬 Message", value=f"_{message or existing_message}_", inline=False)
+            embed.set_footer(text="Use %n as a placeholder for the user's name.\n Use %e to mention everyone.\n DEFAULT will use the default set message.")
+            await ctx.send(embed=embed)
+
+    #@commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-remove", description="remove a birthday")
     async def birthday_remove( self, ctx: commands.Context, user: discord.Member)-> None:
         user = user or ctx.author
@@ -90,9 +115,22 @@ class BirthdaySchedulerCog(commands.Cog):
 
         if uid in self.birthdays:
             del self.birthdays[uid]
-            await ctx.send(f"removed <@{uid}>'s birthday", ephemeral=True)
+            _save_birthdays(self.birthdays)
+
+            embed = discord.Embed(
+                title="🗑️ Birthday Removed",
+                description=f"{user.display_name}'s birthday has been removed.",
+                color=discord.Color.red()
+            )
+            embed.set_thumbnail(url=user.display_avatar.url)
+            await ctx.send(embed=embed)
         else:
-            await ctx.send(f"**uid:{uid}** not found.")
+            embed = discord.Embed(
+                title="❌ Not Found",
+                description=f"No birthday found for **{user.mention}**.",
+                color=discord.Color.orange()
+            )
+            await ctx.send(embed=embed, ephemeral=True)
 
     @commands.hybrid_command(name="birthday-list", description="shows a list of all birthdays" )
     async def birthday_list(self, ctx: commands.Context) -> None:
@@ -150,7 +188,7 @@ class BirthdaySchedulerCog(commands.Cog):
         await ctx.send(embed=embed)
 
 
-    @tasks.loop(time=CHECKING_TIME)
+    @tasks.loop(seconds=10)
     async def check_birthdays(self):
         today = dt.datetime.now().strftime("%d-%m")
         channel = self.bot.get_channel(self.birthday_channel)
