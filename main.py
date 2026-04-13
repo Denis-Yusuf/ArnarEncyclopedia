@@ -54,6 +54,13 @@ class SaltBot(commands.Bot):
         await self.tree.sync(guild = guild)
 
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        """
+        Handles errors raised by prefix and hybrid commands.
+        Unknown commands are silently ignored; all other errors are sent as an ephemeral embed.
+
+        :param ctx: The invocation context of the failed command.
+        :param error: The error that was raised.
+        """
         if isinstance(error, commands.CommandNotFound):
             return
 
@@ -71,6 +78,13 @@ class SaltBot(commands.Bot):
     async def on_app_command_error(
             self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
     ) -> None:
+        """
+        Handles errors raised by slash commands.
+        Uses followup if the interaction was already acknowledged, otherwise responds directly.
+
+        :param interaction: The interaction that triggered the failed command.
+        :param error: The error that was raised.
+        """
         if isinstance(error, discord.app_commands.MissingPermissions):
             description = "You don't have permissions to use that command."
         else:
@@ -83,7 +97,6 @@ class SaltBot(commands.Bot):
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             await interaction.response.send_message(embed=embed, ephemeral=True)
-
 async def main() -> None:
     discord.utils.setup_logging()
     intents = discord.Intents.default()
