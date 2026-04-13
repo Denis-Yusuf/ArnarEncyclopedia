@@ -106,7 +106,7 @@ class BirthdaySchedulerCog(commands.Cog):
 
         cells = []
         for uid, data in self.birthdays.items():
-            user = ctx.guild.get_member(int(uid))
+            user = await ctx.guild.fetch_member(int(uid))
             name = user.name if user else uid
             date = data["date"]
             message = data["message"]
@@ -128,7 +128,7 @@ class BirthdaySchedulerCog(commands.Cog):
             await ctx.send("**No birthday found**")
 
 
-    @tasks.loop(seconds=10)
+    @tasks.loop(time=CHECKING_TIME)
     async def check_birthdays(self):
         today = dt.datetime.now().strftime("%d-%m")
 
@@ -140,12 +140,15 @@ class BirthdaySchedulerCog(commands.Cog):
             date = data["date"]
 
             if date == today:
-                member = channel.guild.get_member(int(uid))
+                print("date equal")
+                member = await channel.guild.fetch_member(int(uid))
                 if member is None:
+                    print("member not found")
                     continue
 
                 message = data["message"]
                 message = _replace_placeholders(message, uid)
+                print("birthday!")
                 await channel.send(message)
 
     @check_birthdays.before_loop
