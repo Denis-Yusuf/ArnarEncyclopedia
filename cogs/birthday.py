@@ -46,26 +46,21 @@ class BirthdaySchedulerCog(commands.Cog):
 
     def cog_load(self) -> None:
         self.check_birthdays.start()
+
     def cog_unload(self) -> None:
         self.check_birthdays.stop()
 
+    @commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-default-message", description="set the default message")
     async def birthday_set_default_message(self, ctx: commands.Context, *, message: str = None) -> None:
         global DEFAULT_MESSAGE
-        if message is not None:
-            for uid, data in self.birthdays.items():
-                if data["message"] == DEFAULT_MESSAGE:
-                    self.birthdays[uid]["message"] = message
-            DEFAULT_MESSAGE = message
+        if message is None:
+            DEFAULT_MESSAGE = "Happy Birthday %n!"
         else:
-            oldmsg = DEFAULT_MESSAGE
-            DEFAULT_MESSAGE= "Happy Birthday %n!"
-            for uid, data in self.birthdays.items():
-                if data["message"] == oldmsg:
-                    self.birthdays[uid]["message"] = DEFAULT_MESSAGE
-        _save_birthdays(self.birthdays)
+            DEFAULT_MESSAGE = message
         await ctx.send(f"Default message set to: {DEFAULT_MESSAGE}")
 
+    @commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-set", description="Add or update a birthday")
     async def birthday_set(self, ctx: commands.Context,date: app_commands.Transform[dt.datetime, DateTransformer], user: discord.Member = None, *, message: str = None ) -> None:
         user = user or ctx.author
@@ -74,7 +69,7 @@ class BirthdaySchedulerCog(commands.Cog):
         if self.birthdays.get(uid) is None:
             self.birthdays[uid] = {
                 "date": date.strftime("%d-%m"),
-                "message":  message or DEFAULT_MESSAGE,
+                "message":  message or "DEFAULT",
             }
             _save_birthdays(self.birthdays)
             await ctx.send(f"saved <@{uid}>'s birthday", ephemeral=True)
@@ -87,8 +82,9 @@ class BirthdaySchedulerCog(commands.Cog):
             _save_birthdays(self.birthdays)
             await ctx.send(f"updated <@{uid}>'s birthday", ephemeral=True)
 
+    @commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-remove", description="remove a birthday")
-    async def birthday_remove( self, ctx: commands.Context, user: discord.Member = None)-> None:
+    async def birthday_remove( self, ctx: commands.Context, user: discord.Member)-> None:
         user = user or ctx.author
         uid = str(user.id)
 
@@ -131,25 +127,27 @@ class BirthdaySchedulerCog(commands.Cog):
     @tasks.loop(time=CHECKING_TIME)
     async def check_birthdays(self):
         today = dt.datetime.now().strftime("%d-%m")
-
         channel = self.bot.get_channel(self.birthday_channel)
+
         if channel is None:
-            print("channel not found")
+            raise commands.ChannelNotFound("Channel not found.")
 
         for uid, data in self.birthdays.items():
-            date = data["date"]
+            message = data["message"]
 
-            if date == today:
-                print("date equal")
+            if data["date"] != today:
+                continue
+            try:
                 member = await channel.guild.fetch_member(int(uid))
                 if member is None:
-                    print("member not found")
-                    continue
+                    raise commands.UserNotFound("User not found.")
 
-                message = data["message"]
+                if message == "DEFAULT":
+                    message = DEFAULT_MESSAGE
                 message = _replace_placeholders(message, uid)
-                print("birthday!")
                 await channel.send(message)
+            except Exception as e:
+                print(f"Error thrown at birthday of uid:{uid}:\n {e}")
 
     @check_birthdays.before_loop
     async def before_check(self):
