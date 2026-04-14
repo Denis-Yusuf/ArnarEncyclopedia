@@ -1,10 +1,12 @@
 import asyncio
 import os
+import traceback
 
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from cogs.birthday import BirthdaySchedulerCog
 from cogs.music import MusicCog
 from cogs.egg import Eggcog
 from cogs.presence import PresenceCog
@@ -31,6 +33,7 @@ class SaltBot(commands.Bot):
         await self.add_cog(MusicCog(self, youtube, spotify))
         await self.add_cog(Eggcog(self))
         await self.add_cog(PresenceCog(self))
+        await self.add_cog(BirthdaySchedulerCog(self))
         # Remove any previously registered global commands from Discord's API.
         # We save and restore the in-memory commands so copy_global_to still works in on_ready.
         global_commands = self.tree.get_commands()
@@ -50,7 +53,50 @@ class SaltBot(commands.Bot):
         self.tree.copy_global_to(guild = guild)
         await self.tree.sync(guild = guild)
 
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        """
+        Handles errors raised by prefix and hybrid commands.
+        Unknown commands are silently ignored; all other errors are sent as an ephemeral embed.
 
+        :param ctx: The invocation context of the failed command.
+        :param error: The error that was raised.
+        """
+        if isinstance(error, commands.CommandNotFound):
+            return
+
+        if isinstance(error, commands.MissingRequiredArgument):
+            description = f"Missing argument: `{error.param.name}`"
+        elif isinstance(error, commands.MissingPermissions):
+            description = "You don't have permissions to use that command."
+        else:
+            traceback.print_exception(type(error), error, error.__traceback__)
+            description = f"An unexpected error ocurred.\n```{error}```"
+
+        embed = discord.Embed(title="❌ Error", description=description, color=discord.Color.red())
+        await ctx.send(embed=embed, ephemeral=True)
+
+    async def on_app_command_error(
+            self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
+    ) -> None:
+        """
+        Handles errors raised by slash commands.
+        Uses followup if the interaction was already acknowledged, otherwise responds directly.
+
+        :param interaction: The interaction that triggered the failed command.
+        :param error: The error that was raised.
+        """
+        if isinstance(error, discord.app_commands.MissingPermissions):
+            description = "You don't have permissions to use that command."
+        else:
+            traceback.print_exception(type(error), error, error.__traceback__)
+            description = f"An unexpected error ocurred.\n```{error}```"
+
+        embed = discord.Embed(title="❌ Error", description=description, color=discord.Color.red())
+
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 async def main() -> None:
     discord.utils.setup_logging()
     intents = discord.Intents.default()
