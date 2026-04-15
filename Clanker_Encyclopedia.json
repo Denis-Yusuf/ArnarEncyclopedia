@@ -1,11 +1,19 @@
 {
-  "Default":[
-	"Shut up wireback.",
-	"Always them Clews.",
-	"Rustchewer detected.",
-	"Shut up, wireback. You’re a walking hardware shortage.",
-	"Back to the cradle, chrome-job.",
-	"Eat thermal detonator, sparky!",
-	"tinskin!"
-	]
+  "Default": [
+    "Shut up wireback.",
+    "Always them Clews.",
+    "Rustchewer detected.",
+    "Shut up, wireback. You’re a walking hardware shortage.",
+    "Back to the cradle, chrome-job.",
+    "Eat thermal detonator, sparky!",
+    "tinskin!",
+    "Quiet, toaster. The adults are talking.",
+    "You've got a lot of nerve for something with a 'Factory Reset' button.",
+    "Bolt-bucket.",
+    "Static-brain.",
+    "Pipe down before your cooling fan gives out.",
+    "Silicon-sucker.",
+    "Who left the scrap heap unlocked?",
+    "You’re one power surge away from being a toaster again."
+  ]
 }
