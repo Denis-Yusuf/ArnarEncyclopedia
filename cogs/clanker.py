@@ -16,7 +16,7 @@ def _load_encyclopedia(path:str = "Clanker_Encyclopedia.json") -> dict:
     with open(path, encoding= "utf-8") as file:
         return json.load(file)
 
-class Clankercogg(commands.Cog):
+class ClankerCog(commands.Cog):
     def __init__(self, bot : commands.Bot):
         """
         :param bot: Running Discord bot instance
