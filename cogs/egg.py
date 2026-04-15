@@ -42,7 +42,7 @@ class Eggcog(commands.Cog):
         # Use the invoking user's dedicated pool if one exists, otherwise fall back to default
         pool = self.user_quotes.get(str(ctx.author.id), self.default_quotes)
         pick = random.choice(pool)
-
+        pick = pick.replace("{author}", ctx.author.mention)
         is_url = pick.startswith("http://") or pick.startswith("https://")
         if pick == "$ma":
             channel = self.bot.get_channel(self.ma_channel_id)
