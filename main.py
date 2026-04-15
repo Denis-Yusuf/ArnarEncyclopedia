@@ -113,5 +113,5 @@ try:
     asyncio.run(main())
 except KeyboardInterrupt:
     pass
-# finally:
-#     os._exit(0)
+finally:
+    os._exit(0)
