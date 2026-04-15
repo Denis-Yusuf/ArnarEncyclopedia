@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from cogs.birthday import BirthdaySchedulerCog
 from cogs.music import MusicCog
 from cogs.egg import Eggcog
-from cogs.clanker import Clankercogg
+from cogs.clanker import ClankerCog
 from cogs.presence import PresenceCog
 from services.spotify import SpotifyService
 from services.youtube import YouTubeService
@@ -36,7 +36,7 @@ class SaltBot(commands.Bot):
         await self.add_cog(Eggcog(self))
         await self.add_cog(PresenceCog(self))
         await self.add_cog(BirthdaySchedulerCog(self))
-        await self.add_cog(Clankercogg(self))
+        await self.add_cog(ClankerCog(self))
         # Remove any previously registered global commands from Discord's API.
         # We save and restore the in-memory commands so copy_global_to still works in on_ready.
         global_commands = self.tree.get_commands()
