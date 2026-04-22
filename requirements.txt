@@ -1,4 +1,5 @@
 discord.py[voice]
-yt-dlp
-spotipy
 python-dotenv
+spotipy
+sqlalchemy
+yt-dlp
