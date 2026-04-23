@@ -1,4 +1,7 @@
+aiosqlite
+alembic
 discord.py[voice]
+pydantic
 python-dotenv
 spotipy
 sqlalchemy

@@ -1,23 +1,44 @@
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert
 
-from database.models import Banner, BannerItem
+from database.models import Banner, BannerItem, Item
 
 
-async def sync_banner(session, data):
-    banner = await session.scalar(select(Banner).where(Banner.name == data["name"]))
+async def sync_items(session, data):
+    # UPSERT
+    stmt = insert(Item).values(data)
 
-    if not banner:
-        banner = Banner(name=data["name"])
-        session.add(banner)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["id"],  # primary key
+        set_={
+            c.name: getattr(stmt.excluded, c.name)
+            for c in Item.__table__.columns
+            if c.name != "id"
+        },
+    )
 
-    banner.active = data["active"]
+    await session.execute(stmt.execution_options(synchronize_session=False))
 
-    await sync_banner_items(session, banner.id, data["items"])
+
+async def sync_banners(session, data):
+    for banner_data in data:
+        banner = await session.scalar(
+            select(Banner).where(Banner.name == banner_data["name"])
+        )
+
+        if not banner:
+            banner = Banner(name=banner_data["name"])
+            session.add(banner)
+            banner.active = banner_data["active"]
+            await session.flush()
+
+        else:
+            banner.active = banner_data["active"]
+
+        await sync_banner_items(session, banner.id, banner_data["items"])
 
 
 async def sync_banner_items(session, banner_id, items):
-
     # UPSERT
     stmt = insert(BannerItem).values(
         [

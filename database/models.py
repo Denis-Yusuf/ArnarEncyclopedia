@@ -8,10 +8,10 @@ from database.database import Base
 
 
 class ItemRarity(enum.Enum):
-    THRASH = "thrash"
-    MEH = "meh"
-    GOOD = "good"
-    HOLY = "holy"
+    THRASH = "THRASH"
+    MEH = "MEH"
+    GOOD = "GOOD"
+    HOLY = "HOLY"
 
 
 class User(Base):

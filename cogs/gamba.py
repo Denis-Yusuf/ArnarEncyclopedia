@@ -3,18 +3,17 @@ from __future__ import annotations
 import json
 import random
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Tuple
 
 from discord.ext import commands
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database import models, sync
-from database.database import SessionLocal, engine
+from database import sync
+from database.database import SessionLocal
 from database.models import Banner, BannerItem, Item, User
-
-
-models.Base.metadata.create_all(bind=engine)
+from database.schemas import ItemSchema
 
 
 @asynccontextmanager
@@ -64,7 +63,9 @@ async def get_banner_drops(
         .where(BannerItem.banner_id == banner.id)
         .join(Item)
     )
-    return banner.name, tuple(list(x) for x in zip(*items))
+    return banner.name, tuple(list(x) for x in zip(*[
+        (ItemSchema.model_validate(item), weight) for item, weight in items
+    ]))
 
 
 class GambaCog(commands.Cog):
@@ -77,15 +78,29 @@ class GambaCog(commands.Cog):
 
     async def cog_load(self):
         """Load all active banners"""
-        # In future, maybe add support for multiple banner files, hard-coded for now
-        with open("banners.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        async with get_db() as db:
-            await sync.sync_banner(db, data)
+        data_dir = Path("data/gacha")
 
-            banners = await db.scalars(select(Banner).where(Banner.active)).all()
-            self.banners = {await get_banner_drops(db, banner) for banner in banners}
+        # In future, maybe add support for multiple banner files, hard-coded for now
+        with open(data_dir / "items.json", "r", encoding="utf-8") as f_items, open(
+            data_dir / "banners.json", "r", encoding="utf-8"
+        ) as f_banners:
+            items_data = json.load(f_items)
+            banner_data = json.load(f_banners)
+        async with get_db() as db:
+            await sync.sync_items(db, items_data)
+            await sync.sync_banners(db, banner_data)
+
+            banners = await db.scalars(select(Banner).where(Banner.active))
+            for banner in banners:
+                banner_name, drops = await get_banner_drops(db, banner)
+                self.banners[banner_name] = drops
             self.default_banner = self.default_banner or next(iter(self.banners))
+
+        print(self.banners)
+        items, weights = self.banners[self.default_banner]
+
+        drop = random.choices(items, weights=weights, k=1)[0]
+        print(drop)
 
     @commands.hybrid_command(
         name="pull", description="Do a single pull in the gacha banner."
@@ -105,4 +120,4 @@ class GambaCog(commands.Cog):
             items, weights = self.banners[banner]
 
             drop = random.choices(items, weights=weights, k=1)[0]
-            await ctx.send(f"You got {drop['name']}!")
+            await ctx.send(f"You got {drop}!")

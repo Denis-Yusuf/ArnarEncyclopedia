@@ -34,3 +34,4 @@ CLAUDE.md
 memory/
 
 birthdays.json
+*.db

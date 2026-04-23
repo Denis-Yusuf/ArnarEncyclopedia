@@ -5,17 +5,16 @@ import traceback
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+load_dotenv() # pylint: disable=wrong-import-position
 
 from cogs.birthday import BirthdaySchedulerCog
 from cogs.music import MusicCog
 from cogs.egg import Eggcog
 from cogs.clanker import ClankerCog
 from cogs.presence import PresenceCog
+from cogs.gamba import GambaCog
 from services.spotify import SpotifyService
 from services.youtube import YouTubeService
-
-
-load_dotenv()
 
 
 class SaltBot(commands.Bot):
@@ -37,6 +36,7 @@ class SaltBot(commands.Bot):
         await self.add_cog(PresenceCog(self))
         await self.add_cog(BirthdaySchedulerCog(self))
         await self.add_cog(ClankerCog(self))
+        await self.add_cog(GambaCog(self))
         # Remove any previously registered global commands from Discord's API.
         # We save and restore the in-memory commands so copy_global_to still works in on_ready.
         global_commands = self.tree.get_commands()
@@ -113,5 +113,7 @@ try:
     asyncio.run(main())
 except KeyboardInterrupt:
     pass
+except Exception:
+    traceback.print_exc()
 finally:
     os._exit(0)

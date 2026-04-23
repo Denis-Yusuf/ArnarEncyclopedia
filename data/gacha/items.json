@@ -1,0 +1,26 @@
+[
+    {
+        "id": 0,
+        "name": "test",
+        "rarity": "THRASH",
+        "image": "no url"
+    },
+    {
+        "id": 1,
+        "name": "test",
+        "rarity": "MEH",
+        "image": "no url"
+    },
+    {
+        "id": 2,
+        "name": "test",
+        "rarity": "GOOD",
+        "image": "no url"
+    },
+    {
+        "id": 3,
+        "name": "test",
+        "rarity": "HOLY",
+        "image": "no url"
+    }
+]
