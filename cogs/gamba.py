@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import sync
 from database.database import SessionLocal
-from database.models import Banner, BannerItem, Item, User
+from database.models import Banner, BannerItem, Inventory, Item, User
 from database.schemas import ItemSchema
 
 
@@ -68,6 +68,28 @@ async def get_banner_drops(
     ]))
 
 
+async def add_to_inventory(session: AsyncSession, user_id: int, item_id: int, amount: int):
+    """
+    Inserts item into user's inventory, by inserting into table, or increasing amount.
+    Assumes User exists.
+
+    :param session: Asunc database session.
+    :param user_id: Id of user.
+    :param item_id: Id of item.
+    :param amount: Amount of item.
+    """
+    entry = await session.get(Inventory, (user_id, item_id))
+
+    if entry:
+        entry.quantity += amount
+    else:
+        session.add(Inventory(
+            user_id=user_id,
+            item_id=item_id,
+            quantity=amount
+        ))
+
+
 class GambaCog(commands.Cog):
     """Cog for Gamba services"""
 
@@ -96,12 +118,6 @@ class GambaCog(commands.Cog):
                 self.banners[banner_name] = drops
             self.default_banner = self.default_banner or next(iter(self.banners))
 
-        print(self.banners)
-        items, weights = self.banners[self.default_banner]
-
-        drop = random.choices(items, weights=weights, k=1)[0]
-        print(drop)
-
     @commands.hybrid_command(
         name="pull", description="Do a single pull in the gacha banner."
     )
@@ -116,8 +132,9 @@ class GambaCog(commands.Cog):
         user_id = ctx.author.id
         banner = banner or self.default_banner
         async with get_db() as db:
-            user = await get_or_create_user(db, user_id)
+            await get_or_create_user(db, user_id)
             items, weights = self.banners[banner]
 
             drop = random.choices(items, weights=weights, k=1)[0]
+            add_to_inventory(db, user_id, drop.id, 1)
             await ctx.send(f"You got {drop}!")
