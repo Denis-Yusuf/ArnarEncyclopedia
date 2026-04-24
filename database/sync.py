@@ -7,33 +7,19 @@ from sqlalchemy.dialects.sqlite import insert
 from database.models import Banner, BannerItem, Item
 
 
-async def sync_items(session, data):
-    # UPSERT
-    stmt = insert(Item).values(data)
-
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["id"],  # primary key
-        set_={
-            c.name: getattr(stmt.excluded, c.name)
-            for c in Item.__table__.columns
-            if c.name != "id"
-        },
-    )
-
-    await session.execute(stmt.execution_options(synchronize_session=False))
-
-
 async def import_items(filename):
     uri = os.getenv("DATABASE_URL")
-    df = pl.read_csv(filename)
+    uri = uri.replace("+aiosqlite", "")
 
+    df = pl.read_csv(filename)
     df.write_database(table_name="items", connection=uri, engine="adbc", if_table_exists="append")
 
 
 async def export_items(filename):
     uri = os.getenv("DATABASE_URL")
+    uri = uri.replace("+aiosqlite", "")
+
     df = pl.read_database_uri("SELECT * FROM items", uri, engine="adbc")
-    
     df.write_csv(filename)
 
 

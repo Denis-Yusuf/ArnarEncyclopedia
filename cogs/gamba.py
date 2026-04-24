@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Tuple
 
 from discord.ext import commands
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import sync
 from database.database import SessionLocal
-from database.models import Banner, BannerItem, Inventory, Item, User
+from database.models import Banner, BannerItem, Inventory, Item, ItemRarity, User
 from database.schemas import ItemSchema
 
 
@@ -95,8 +95,9 @@ class GambaCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.banners = {}
         self.data_dir = Path("data/gacha")
+        self.default_cum_weights = [0.8, 0.94, 0.99, 1]
+        self.banners = {}
 
     async def cog_load(self):
         """Load all active banners"""
@@ -106,10 +107,12 @@ class GambaCog(commands.Cog):
             banner_data = json.load(f)
 
         async with get_db() as db:
-            # Import items if table is empty
+            # Import default items if table is empty
             stmt = select(exists().select_from(Item))
-            if not await db.execute(stmt).scalar():
-                sync.import_items(self.data_dir / "items.csv")
+            if not await db.scalar(stmt):
+                print("Importing items...")
+                await sync.import_items(self.data_dir / "items.csv")
+                print("Done!")
 
             await sync.sync_banners(db, banner_data)
 
@@ -131,12 +134,18 @@ class GambaCog(commands.Cog):
         """
         user_id = ctx.author.id
 
-        if banner is not None or banner not in self.banners:
+        if banner is not None and banner not in self.banners:
             await ctx.send(f"Banner \"{banner}\" does not exist.")
+            return
         async with get_db() as db:
             await get_or_create_user(db, user_id)
-            # items, weights = self.banners[banner]
+            # no banner support yet
+            rarity = random.choices(list(ItemRarity), cum_weights=self.default_cum_weights)[0]
 
-            # drop = random.choices(items, weights=weights, k=1)[0]
-            # add_to_inventory(db, user_id, drop.id, 1)
-            # await ctx.send(f"You got {drop}!")
+            count = await db.scalar((select(func.count()).where(Item.rarity == rarity).where(Item.active)))
+            stmt = select(Item).where(Item.rarity == rarity).where(Item.active).offset(random.randint(0, count - 1)).limit(1)
+            drop = await db.scalar(stmt)
+            drop = ItemSchema.model_validate(drop)
+
+            add_to_inventory(db, user_id, drop.id, 1)
+            await ctx.send(f"You got {drop}!")

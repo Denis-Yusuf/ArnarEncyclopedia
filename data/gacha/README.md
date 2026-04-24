@@ -19,15 +19,13 @@
     ```
     Multiple banner files might be supported in the future. Right now, all items need to be manually added. Maybe in the future, only rare items need to be added.
 
-2.  items.json should have the following structure:
-    ```yaml
-    [
-        {
-            "id": <unique int>,
-            "name": <string>,
-            "rarity": <string (see ItemRarity in database/models)>,
-            "image": <string>
-        },
-        ...
-    ]
-    ```
+2.  items.csv should have the following columns:
+    -   id: Item id
+    -   mal_id: Character Id in myanimelist
+    -   name: Name of the character
+    -   image: Image url
+    -   image_fallback: fallback image url
+    -   image_small: Small image url
+    -   rarity: Item rarity, see database.models
+    -   active: Active in pool or not
+    -   source: Original media appearance of character. (Default null, need to query mal.)

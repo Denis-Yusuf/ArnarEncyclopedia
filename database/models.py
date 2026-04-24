@@ -8,10 +8,10 @@ from database.database import Base
 
 
 class ItemRarity(enum.Enum):
-    THRASH = "THRASH"
-    MEH = "MEH"
-    GOOD = "GOOD"
-    HOLY = "HOLY"
+    TRASH = 1
+    MEH = 2
+    GOOD = 3
+    HOLY = 4
 
 
 class User(Base):
@@ -31,8 +31,7 @@ class Item(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     mal_id: Mapped[int] = mapped_column(index=True)
     name: Mapped[str] = mapped_column(index=True)
-    name_source: Mapped[str] = mapped_column()
-    source: Mapped[str] = mapped_column()
+    source: Mapped[str] = mapped_column(nullable=True)
     image: Mapped[str] = mapped_column()
     image_fallback: Mapped[str] = mapped_column()
     image_small: Mapped[str] = mapped_column()

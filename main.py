@@ -113,7 +113,7 @@ try:
     asyncio.run(main())
 except KeyboardInterrupt:
     pass
-# except Exception:
-#     traceback.print_exc()
+except Exception:
+    traceback.print_exc()
 finally:
     os._exit(0)
