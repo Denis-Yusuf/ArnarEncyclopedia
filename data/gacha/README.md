@@ -7,7 +7,7 @@
             "name": <string>,
             "items": [
                 {
-                    "item_id": <existing id in items.json>,
+                    "item_id": <existing id in items.csv>,
                     "weight": <int>
                 },
                 ...
@@ -17,7 +17,7 @@
         ...
     ]
     ```
-    Multiple banner files might be supported in the future.
+    Multiple banner files might be supported in the future. Right now, all items need to be manually added. Maybe in the future, only rare items need to be added.
 
 2.  items.json should have the following structure:
     ```yaml
@@ -25,7 +25,7 @@
         {
             "id": <unique int>,
             "name": <string>,
-            "rarity": <one of the following: ("THRASH", "MEH", "GOOD", "HOLY")>,
+            "rarity": <string (see ItemRarity in database/models)>,
             "image": <string>
         },
         ...

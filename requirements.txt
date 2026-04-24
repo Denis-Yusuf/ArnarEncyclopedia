@@ -1,6 +1,7 @@
 aiosqlite
 alembic
 discord.py[voice]
+polars[adbc]
 pydantic
 python-dotenv
 spotipy

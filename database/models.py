@@ -29,9 +29,15 @@ class Item(Base):
     __tablename__ = "items"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    mal_id: Mapped[int] = mapped_column(index=True)
     name: Mapped[str] = mapped_column(index=True)
-    rarity: Mapped[ItemRarity] = mapped_column(Enum(ItemRarity))
+    name_source: Mapped[str] = mapped_column()
+    source: Mapped[str] = mapped_column()
     image: Mapped[str] = mapped_column()
+    image_fallback: Mapped[str] = mapped_column()
+    image_small: Mapped[str] = mapped_column()
+    rarity: Mapped[ItemRarity] = mapped_column(Enum(ItemRarity))
+    active: Mapped[bool] = mapped_column(default=True)
 
     owners: Mapped[List["Inventory"]] = relationship(back_populates="item")
     banners: Mapped[List["BannerItem"]] = relationship(back_populates="item")

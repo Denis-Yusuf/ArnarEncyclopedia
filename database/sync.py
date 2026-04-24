@@ -1,3 +1,6 @@
+import os
+
+import polars as pl
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert
 
@@ -18,6 +21,20 @@ async def sync_items(session, data):
     )
 
     await session.execute(stmt.execution_options(synchronize_session=False))
+
+
+async def import_items(filename):
+    uri = os.getenv("DATABASE_URL")
+    df = pl.read_csv(filename)
+
+    df.write_database(table_name="items", connection=uri, engine="adbc", if_table_exists="append")
+
+
+async def export_items(filename):
+    uri = os.getenv("DATABASE_URL")
+    df = pl.read_database_uri("SELECT * FROM items", uri, engine="adbc")
+    
+    df.write_csv(filename)
 
 
 async def sync_banners(session, data):

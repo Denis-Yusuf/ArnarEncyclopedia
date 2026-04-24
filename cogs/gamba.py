@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Tuple
 
 from discord.ext import commands
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import sync
@@ -96,27 +96,27 @@ class GambaCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.banners = {}
-        self.default_banner = None
+        self.data_dir = Path("data/gacha")
 
     async def cog_load(self):
         """Load all active banners"""
-        data_dir = Path("data/gacha")
 
         # In future, maybe add support for multiple banner files, hard-coded for now
-        with open(data_dir / "items.json", "r", encoding="utf-8") as f_items, open(
-            data_dir / "banners.json", "r", encoding="utf-8"
-        ) as f_banners:
-            items_data = json.load(f_items)
-            banner_data = json.load(f_banners)
+        with open(self.data_dir / "banners.json", "r", encoding="utf-8") as f:
+            banner_data = json.load(f)
+
         async with get_db() as db:
-            await sync.sync_items(db, items_data)
+            # Import items if table is empty
+            stmt = select(exists().select_from(Item))
+            if not await db.execute(stmt).scalar():
+                sync.import_items(self.data_dir / "items.csv")
+
             await sync.sync_banners(db, banner_data)
 
             banners = await db.scalars(select(Banner).where(Banner.active))
             for banner in banners:
                 banner_name, drops = await get_banner_drops(db, banner)
                 self.banners[banner_name] = drops
-            self.default_banner = self.default_banner or next(iter(self.banners))
 
     @commands.hybrid_command(
         name="pull", description="Do a single pull in the gacha banner."
@@ -130,11 +130,13 @@ class GambaCog(commands.Cog):
         :param banner: The banner to pull from, uses default if none given.
         """
         user_id = ctx.author.id
-        banner = banner or self.default_banner
+
+        if banner is not None or banner not in self.banners:
+            await ctx.send(f"Banner \"{banner}\" does not exist.")
         async with get_db() as db:
             await get_or_create_user(db, user_id)
-            items, weights = self.banners[banner]
+            # items, weights = self.banners[banner]
 
-            drop = random.choices(items, weights=weights, k=1)[0]
-            add_to_inventory(db, user_id, drop.id, 1)
-            await ctx.send(f"You got {drop}!")
+            # drop = random.choices(items, weights=weights, k=1)[0]
+            # add_to_inventory(db, user_id, drop.id, 1)
+            # await ctx.send(f"You got {drop}!")
