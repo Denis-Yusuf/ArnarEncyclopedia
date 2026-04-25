@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from database.models import ItemRarity
 
@@ -13,3 +13,10 @@ class ItemSchema(BaseModel):
     rarity: ItemRarity
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("rarity", mode="before")
+    @classmethod
+    def convert_rarity(cls, v):
+        if isinstance(v, str):
+            return ItemRarity[v]
+        return v

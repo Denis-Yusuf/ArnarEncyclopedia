@@ -3,13 +3,34 @@ import os
 from logging.config import fileConfig
 
 from dotenv import load_dotenv
-load_dotenv() # pylint: disable=wrong-import-position
+
+load_dotenv()  # pylint: disable=wrong-import-position
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-from database.models import Base
+from alembic.autogenerate import renderers
+from database.models import Base, IntEnumType
+
+
+def render_item(type_, obj, autogen_context):
+    """Apply custom rendering for selected items."""
+    if type_ == "type" and isinstance(obj, IntEnumType):
+        enum_class = obj.enum_class
+
+        # Inject the necessary imports into the migration file
+        autogen_context.imports.add(
+            f"from {enum_class.__module__} import {enum_class.__name__}"
+        )
+        autogen_context.imports.add("from database.models import IntEnumType")
+
+        print(f"from {enum_class.__module__} import {enum_class.__name__}")
+        print("from database.models import IntEnumType")
+
+        return f"IntEnumType({enum_class.__name__})"
+    return False
+
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -53,6 +74,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        render_item=render_item,
     )
 
     with context.begin_transaction():
@@ -60,7 +82,9 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(
+        connection=connection, target_metadata=target_metadata, render_item=render_item
+    )
 
     with context.begin_transaction():
         context.run_migrations()

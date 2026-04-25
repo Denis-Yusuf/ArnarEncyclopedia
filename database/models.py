@@ -1,20 +1,59 @@
 import enum
 from typing import List
 
-from sqlalchemy import Enum, ForeignKey, UniqueConstraint, text
+from sqlalchemy import ForeignKey, Integer, text, TypeDecorator, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.database import Base
 
 
-class ItemRarity(enum.Enum):
+class ItemRarity(enum.IntEnum):
+    """Rarities of items"""
     TRASH = 1
     MEH = 2
     GOOD = 3
     HOLY = 4
 
 
+class IntEnumType(TypeDecorator):
+    """Store enum as integer in database"""
+    impl = Integer
+    cache_ok = True
+
+    def __init__(self, enum_class):
+        self.enum_class = enum_class
+        super().__init__()
+
+    def __repr__(self):
+        return f"IntEnumType({self.enum_class.__name__})"
+
+    @property
+    def python_type(self):
+        return self.enum_class
+
+    def process_bind_param(self, value, dialect):
+        if isinstance(value, self.enum_class):
+            return value.value
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            return self.enum_class[value].value
+        raise TypeError(f"Invalid type for enum: {type(value)}")
+
+    def process_result_value(self, value, dialect):
+        return self.enum_class(value)
+
+    def process_literal_param(self, value, dialect):
+        if value is None:
+            return "NULL"
+        return str(int(value))
+
+    def coerce_compared_value(self, op, value):
+        return self
+
+
 class User(Base):
+    """Table of discord users"""
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -26,6 +65,7 @@ class User(Base):
 
 
 class Item(Base):
+    """All items in gacha"""
     __tablename__ = "items"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -35,7 +75,7 @@ class Item(Base):
     image: Mapped[str] = mapped_column()
     image_fallback: Mapped[str] = mapped_column()
     image_small: Mapped[str] = mapped_column()
-    rarity: Mapped[ItemRarity] = mapped_column(Enum(ItemRarity))
+    rarity: Mapped[ItemRarity] = mapped_column(IntEnumType(ItemRarity))
     active: Mapped[bool] = mapped_column(default=True)
 
     owners: Mapped[List["Inventory"]] = relationship(back_populates="item")
@@ -43,6 +83,7 @@ class Item(Base):
 
 
 class Inventory(Base):
+    """Inventory of users"""
     __tablename__ = "inventory"
 
     user_id: Mapped[int] = mapped_column(
@@ -58,6 +99,7 @@ class Inventory(Base):
 
 
 class Banner(Base):
+    """Specific banner in gacha"""
     __tablename__ = "banners"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -70,6 +112,7 @@ class Banner(Base):
 
 
 class BannerItem(Base):
+    """Item pool of banners"""
     __tablename__ = "banner_items"
     __table_args__ = (UniqueConstraint("banner_id", "item_id"),)
 

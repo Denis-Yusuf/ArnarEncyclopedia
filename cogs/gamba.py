@@ -63,12 +63,17 @@ async def get_banner_drops(
         .where(BannerItem.banner_id == banner.id)
         .join(Item)
     )
-    return banner.name, tuple(list(x) for x in zip(*[
-        (ItemSchema.model_validate(item), weight) for item, weight in items
-    ]))
+    return banner.name, tuple(
+        list(x)
+        for x in zip(
+            *[(ItemSchema.model_validate(item), weight) for item, weight in items]
+        )
+    )
 
 
-async def add_to_inventory(session: AsyncSession, user_id: int, item_id: int, amount: int):
+async def add_to_inventory(
+    session: AsyncSession, user_id: int, item_id: int, amount: int
+):
     """
     Inserts item into user's inventory, by inserting into table, or increasing amount.
     Assumes User exists.
@@ -83,11 +88,7 @@ async def add_to_inventory(session: AsyncSession, user_id: int, item_id: int, am
     if entry:
         entry.quantity += amount
     else:
-        session.add(Inventory(
-            user_id=user_id,
-            item_id=item_id,
-            quantity=amount
-        ))
+        session.add(Inventory(user_id=user_id, item_id=item_id, quantity=amount))
 
 
 class GambaCog(commands.Cog):
@@ -135,17 +136,51 @@ class GambaCog(commands.Cog):
         user_id = ctx.author.id
 
         if banner is not None and banner not in self.banners:
-            await ctx.send(f"Banner \"{banner}\" does not exist.")
+            await ctx.send(f'Banner "{banner}" does not exist.')
             return
         async with get_db() as db:
             await get_or_create_user(db, user_id)
             # no banner support yet
-            rarity = random.choices(list(ItemRarity), cum_weights=self.default_cum_weights)[0]
+            rarity = random.choices(
+                list(ItemRarity), cum_weights=self.default_cum_weights
+            )[0]
 
-            count = await db.scalar((select(func.count()).where(Item.rarity == rarity).where(Item.active)))
-            stmt = select(Item).where(Item.rarity == rarity).where(Item.active).offset(random.randint(0, count - 1)).limit(1)
+            count = await db.scalar(
+                (select(func.count()).where(Item.rarity == rarity).where(Item.active))
+            )
+            stmt = (
+                select(Item)
+                .where(Item.rarity == rarity)
+                .where(Item.active)
+                .offset(random.randint(0, count - 1))
+                .limit(1)
+            )
             drop = await db.scalar(stmt)
             drop = ItemSchema.model_validate(drop)
 
-            add_to_inventory(db, user_id, drop.id, 1)
+            await add_to_inventory(db, user_id, drop.id, 1)
             await ctx.send(f"You got {drop}!")
+
+    @commands.hybrid_command(name="inventory", description="Check your inventory.")
+    async def inventory(self, ctx: commands.Context) -> None:
+        user_id = ctx.author.id
+        print(user_id)
+        async with get_db() as db:
+            user = await get_or_create_user(db, user_id)
+            stmt = (
+                select(Item.rarity, func.count())
+                .join_from(Inventory, Item)
+                .where(Inventory.user_id == user_id)
+                .group_by(Item.rarity)
+                .order_by(Item.rarity.desc())
+            )
+            counts = (await db.execute(stmt)).all()
+
+            stmt = (
+                select(Item)
+                .join_from(Inventory, Item)
+                .where(Inventory.user_id == user_id)
+                .order_by(Item.rarity.desc(), Item.id)
+                .limit(20)
+            )
+            items = (await db.scalars(stmt)).all()

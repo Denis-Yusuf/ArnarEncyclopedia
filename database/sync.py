@@ -4,7 +4,7 @@ import polars as pl
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert
 
-from database.models import Banner, BannerItem, Item
+from database.models import Banner, BannerItem, Item, ItemRarity
 
 
 async def import_items(filename):

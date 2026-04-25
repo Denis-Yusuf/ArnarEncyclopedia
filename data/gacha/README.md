@@ -26,6 +26,6 @@
     -   image: Image url
     -   image_fallback: fallback image url
     -   image_small: Small image url
-    -   rarity: Item rarity, see database.models
+    -   rarity: Item rarity, see database.models. It is important that this column is of type int.
     -   active: Active in pool or not
     -   source: Original media appearance of character. (Default null, need to query mal.)

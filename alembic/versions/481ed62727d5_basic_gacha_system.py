@@ -1,18 +1,19 @@
 """Basic gacha system
 
-Revision ID: 4566910b5639
+Revision ID: 481ed62727d5
 Revises: 
-Create Date: 2026-04-25 00:04:14.406145
+Create Date: 2026-04-25 05:25:24.188385
 
 """
 from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
-
+from database.models import IntEnumType
+from database.models import ItemRarity
 
 # revision identifiers, used by Alembic.
-revision: str = '4566910b5639'
+revision: str = '481ed62727d5'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -36,7 +37,7 @@ def upgrade() -> None:
     sa.Column('image', sa.String(), nullable=False),
     sa.Column('image_fallback', sa.String(), nullable=False),
     sa.Column('image_small', sa.String(), nullable=False),
-    sa.Column('rarity', sa.Enum('TRASH', 'MEH', 'GOOD', 'HOLY', name='itemrarity'), nullable=False),
+    sa.Column('rarity', IntEnumType(ItemRarity), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
