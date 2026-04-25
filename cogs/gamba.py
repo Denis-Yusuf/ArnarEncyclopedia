@@ -4,9 +4,11 @@ import json
 import random
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Tuple
+from typing import defaultdict, Tuple
 
+import discord
 from discord.ext import commands
+from discord.utils import logging
 from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,7 +99,14 @@ class GambaCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.data_dir = Path("data/gacha")
-        self.default_cum_weights = [0.8, 0.94, 0.99, 1]
+        self.default_cum_weights = [0.8, 0.95, 0.99, 1]
+        self.rarity_colors = [
+            discord.Color.light_gray(),
+            discord.Color.blue(),
+            discord.Color.purple(),
+            discord.Color.gold(),
+        ]
+        self.rarity_counts = []
         self.banners = {}
 
     async def cog_load(self):
@@ -111,9 +120,18 @@ class GambaCog(commands.Cog):
             # Import default items if table is empty
             stmt = select(exists().select_from(Item))
             if not await db.scalar(stmt):
-                print("Importing items...")
+                logging.info("Importing items...")
                 await sync.import_items(self.data_dir / "items.csv")
-                print("Done!")
+                logging.info("Done!")
+
+            # Total count of each rarity
+            stmt = (
+                select(func.count())
+                .select_from(Item)
+                .group_by(Item.rarity)
+                .order_by(Item.rarity.asc())
+            )
+            self.rarity_counts = (await db.scalars(stmt)).all()
 
             await sync.sync_banners(db, banner_data)
 
@@ -156,15 +174,27 @@ class GambaCog(commands.Cog):
                 .limit(1)
             )
             drop = await db.scalar(stmt)
-            drop = ItemSchema.model_validate(drop)
+            drop: ItemSchema = ItemSchema.model_validate(drop)
 
             await add_to_inventory(db, user_id, drop.id, 1)
-            await ctx.send(f"You got {drop}!")
+        embed = discord.Embed(
+            color=self.rarity_colors[drop.rarity],
+            title=drop.name,
+            description=drop.rarity.name,
+        )
+        embed.set_image(url=drop.image)
+        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="inventory", description="Check your inventory.")
-    async def inventory(self, ctx: commands.Context) -> None:
-        user_id = ctx.author.id
-        print(user_id)
+    async def inventory(
+        self, ctx: commands.Context, *, member: discord.Member = None
+    ) -> None:
+        """
+        Display the inventory of user.
+
+        :param member: An optional Discord user to see its inventory instead.
+        """
+        user_id = ctx.author.id if member is None else member.id
         async with get_db() as db:
             user = await get_or_create_user(db, user_id)
             stmt = (
@@ -181,6 +211,18 @@ class GambaCog(commands.Cog):
                 .join_from(Inventory, Item)
                 .where(Inventory.user_id == user_id)
                 .order_by(Item.rarity.desc(), Item.id)
-                .limit(20)
+                .limit(10)
             )
             items = (await db.scalars(stmt)).all()
+            msg = "Collection:\n"
+
+            counts = defaultdict(int, counts)
+
+            for rarity in reversed(list(ItemRarity)):
+                msg += f"{rarity.name}: {counts[rarity]} / {self.rarity_counts[rarity]}\n"
+
+            msg += "\nTop 10:\n"
+            for item in items:
+                msg += f"-\t{item.name}, {item.rarity.name}\n"
+            
+            await ctx.send(msg, ephemeral=True)

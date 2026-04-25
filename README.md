@@ -12,3 +12,7 @@ Garbage ass bot for discord.
     alembic upgrade head
     ```
     inside venv, then run main.py
+
+## Datasets
+
+This repository contains processed data of the following dataset: https://www.kaggle.com/datasets/sazzadsiddiquelikhon/anime-character-database-july-2025 Licensed under (ODbL)[https://opendatacommons.org/licenses/odbl/1-0/]

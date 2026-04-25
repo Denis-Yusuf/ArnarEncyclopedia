@@ -9,10 +9,10 @@ from database.database import Base
 
 class ItemRarity(enum.IntEnum):
     """Rarities of items"""
-    TRASH = 1
-    MEH = 2
-    GOOD = 3
-    HOLY = 4
+    TRASH = 0
+    MEH = 1
+    GOOD = 2
+    HOLY = 3
 
 
 class IntEnumType(TypeDecorator):
