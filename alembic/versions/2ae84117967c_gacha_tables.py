@@ -1,8 +1,8 @@
-"""Basic gacha system
+"""Gacha tables
 
-Revision ID: 481ed62727d5
+Revision ID: 2ae84117967c
 Revises: 
-Create Date: 2026-04-25 05:25:24.188385
+Create Date: 2026-04-27 18:11:02.653850
 
 """
 from typing import Sequence, Union
@@ -13,7 +13,7 @@ from database.models import IntEnumType
 from database.models import ItemRarity
 
 # revision identifiers, used by Alembic.
-revision: str = '481ed62727d5'
+revision: str = '2ae84117967c'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -31,17 +31,16 @@ def upgrade() -> None:
     op.create_index(op.f('ix_banners_name'), 'banners', ['name'], unique=False)
     op.create_table('items',
     sa.Column('id', sa.Integer(), nullable=False),
-    sa.Column('mal_id', sa.Integer(), nullable=False),
     sa.Column('name', sa.String(), nullable=False),
+    sa.Column('mal_id', sa.Integer(), nullable=True),
     sa.Column('source', sa.String(), nullable=True),
     sa.Column('image', sa.String(), nullable=False),
-    sa.Column('image_fallback', sa.String(), nullable=False),
-    sa.Column('image_small', sa.String(), nullable=False),
+    sa.Column('image_fallback', sa.String(), nullable=True),
+    sa.Column('image_small', sa.String(), nullable=True),
     sa.Column('rarity', IntEnumType(ItemRarity), nullable=False),
     sa.Column('active', sa.Boolean(), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index(op.f('ix_items_mal_id'), 'items', ['mal_id'], unique=False)
     op.create_index(op.f('ix_items_name'), 'items', ['name'], unique=False)
     op.create_table('users',
     sa.Column('id', sa.Integer(), nullable=False),
@@ -75,7 +74,6 @@ def downgrade() -> None:
     op.drop_table('banner_items')
     op.drop_table('users')
     op.drop_index(op.f('ix_items_name'), table_name='items')
-    op.drop_index(op.f('ix_items_mal_id'), table_name='items')
     op.drop_table('items')
     op.drop_index(op.f('ix_banners_name'), table_name='banners')
     op.drop_table('banners')

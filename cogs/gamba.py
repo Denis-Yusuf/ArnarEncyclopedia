@@ -9,7 +9,7 @@ from typing import defaultdict, Tuple
 import discord
 from discord.ext import commands
 from discord.utils import logging
-from sqlalchemy import exists, func, select
+from sqlalchemy import column, exists, func, select, table, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import sync
@@ -32,6 +32,59 @@ async def get_db() -> AsyncSession:
         raise
     finally:
         await db.close()
+
+
+async def create_fts():
+    """
+    Create virtual items table for indexing.
+    """
+    async with get_db() as db:
+        await db.execute(
+            text(
+                """
+            CREATE VIRTUAL TABLE IF NOT EXISTS items_fts
+            USING fts5(
+                name,
+                content='items',
+                content_rowid='id',
+                prefix='2 3 4'
+            );
+        """
+            )
+        )
+
+        await db.execute(
+            text(
+                """
+            CREATE TRIGGER IF NOT EXISTS items_ai AFTER INSERT ON items BEGIN
+            INSERT INTO items_fts(rowid, name)
+            VALUES (new.id, new.name);
+            END;
+        """
+            )
+        )
+
+        await db.execute(
+            text(
+                """
+            CREATE TRIGGER IF NOT EXISTS items_ad AFTER DELETE ON items BEGIN
+            DELETE FROM items_fts WHERE rowid = old.id;
+            END;
+        """
+            )
+        )
+
+        await db.execute(
+            text(
+                """
+            CREATE TRIGGER IF NOT EXISTS items_au AFTER UPDATE ON items BEGIN
+            UPDATE items_fts
+            SET name = new.name
+            WHERE rowid = new.id;
+            END;
+        """
+            )
+        )
 
 
 async def get_or_create_user(session: AsyncSession, user_id: int):
@@ -111,10 +164,8 @@ class GambaCog(commands.Cog):
 
     async def cog_load(self):
         """Load all active banners"""
-
-        # In future, maybe add support for multiple banner files, hard-coded for now
-        with open(self.data_dir / "banners.json", "r", encoding="utf-8") as f:
-            banner_data = json.load(f)
+        # Create virtual items table
+        await create_fts()
 
         async with get_db() as db:
             # Import default items if table is empty
@@ -122,6 +173,14 @@ class GambaCog(commands.Cog):
             if not await db.scalar(stmt):
                 logging.info("Importing items...")
                 await sync.import_items(self.data_dir / "items.csv")
+                await db.execute(
+                    text(
+                        """
+                    INSERT INTO items_fts(items_fts)
+                    VALUES ('optimize');
+                """
+                    )
+                )
                 logging.info("Done!")
 
             # Total count of each rarity
@@ -133,6 +192,9 @@ class GambaCog(commands.Cog):
             )
             self.rarity_counts = (await db.scalars(stmt)).all()
 
+            # In future, maybe add support for multiple banner files, hard-coded for now
+            with open(self.data_dir / "banners.json", "r", encoding="utf-8") as f:
+                banner_data = json.load(f)
             await sync.sync_banners(db, banner_data)
 
             banners = await db.scalars(select(Banner).where(Banner.active))
@@ -140,22 +202,10 @@ class GambaCog(commands.Cog):
                 banner_name, drops = await get_banner_drops(db, banner)
                 self.banners[banner_name] = drops
 
-    @commands.hybrid_command(
-        name="pull", description="Do a single pull in the gacha banner."
-    )
-    async def pull(self, ctx: commands.Context, *, banner: str = None) -> None:
+    async def single_pull(self, user_id: int, banner: str = None) -> None:
         """
-        Do a singular pull in given banner or default banner. Item will be added to
-        the inventory of the user.
-
-        :param ctx: The invocation context.
-        :param banner: The banner to pull from, uses default if none given.
+        Does a single pull and returns an embed.
         """
-        user_id = ctx.author.id
-
-        if banner is not None and banner not in self.banners:
-            await ctx.send(f'Banner "{banner}" does not exist.')
-            return
         async with get_db() as db:
             await get_or_create_user(db, user_id)
             # no banner support yet
@@ -183,7 +233,41 @@ class GambaCog(commands.Cog):
             description=drop.rarity.name,
         )
         embed.set_image(url=drop.image)
+        return embed
+
+    @commands.hybrid_command(
+        name="pull", description="Do a single pull in the gacha banner."
+    )
+    async def pull(self, ctx: commands.Context, *, banner: str = None) -> None:
+        """
+        Do a singular pull in given banner or default banner. Item will be added to
+        the inventory of the user.
+
+        :param ctx: The invocation context.
+        :param banner: The banner to pull from, uses default if none given.
+        """
+        user_id = ctx.author.id
+
+        if banner is not None and banner not in self.banners:
+            await ctx.send(f'Banner "{banner}" does not exist.', ephemeral=True)
+            return
+
+        embed = await self.single_pull(user_id, banner)
         await ctx.send(embed=embed)
+
+    @commands.hybrid_command(
+        name="pullten", description="Do a 10 pull in the gacha banner."
+    )
+    async def pull_ten(self, ctx: commands.Context, *, banner: str = None) -> None:
+        user_id = ctx.author.id
+
+        if banner is not None and banner not in self.banners:
+            await ctx.send(f'Banner "{banner}" does not exist.', ephemeral=True)
+            return
+
+        await ctx.send(
+            embeds=[await self.single_pull(user_id, banner) for _ in range(10)],
+        )
 
     @commands.hybrid_command(name="inventory", description="Check your inventory.")
     async def inventory(
@@ -219,10 +303,45 @@ class GambaCog(commands.Cog):
             counts = defaultdict(int, counts)
 
             for rarity in reversed(list(ItemRarity)):
-                msg += f"{rarity.name}: {counts[rarity]} / {self.rarity_counts[rarity]}\n"
+                msg += (
+                    f"{rarity.name}: {counts[rarity]} / {self.rarity_counts[rarity]}\n"
+                )
 
             msg += "\nTop 10:\n"
             for item in items:
                 msg += f"-\t{item.name}, {item.rarity.name}\n"
-            
-            await ctx.send(msg, ephemeral=True)
+
+            await ctx.send(msg)
+
+    @commands.hybrid_command(
+        name="query", description="Search for an item in the Database."
+    )
+    async def query(self, ctx: commands.Context, *, query: str) -> None:
+        """
+        Search for an item given a query, using fts5.
+        """
+        q = " AND ".join(f"{t}*" for t in query.strip().split())
+        async with get_db() as db:
+            # Declare the FTS table as a lightweight construct
+            items_fts = table(
+                "items_fts",
+                column("rowid"),
+                column("name"),
+                column("rank"),
+            )
+            stmt = (
+                select(Item)
+                .join(items_fts, Item.id == items_fts.c.rowid)
+                .where(items_fts.c.name.match(q))
+                .order_by(items_fts.c.rank)
+                .limit(1)
+            )
+            result = ItemSchema.model_validate(await db.scalar(stmt, {"q": q}))
+
+        embed = discord.Embed(
+            color=self.rarity_colors[result.rarity],
+            title=result.name,
+            description=result.rarity.name,
+        )
+        embed.set_image(url=result.image)
+        await ctx.send(embed=embed)

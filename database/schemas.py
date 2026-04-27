@@ -4,12 +4,12 @@ from database.models import ItemRarity
 
 class ItemSchema(BaseModel):
     id: int
-    mal_id: int
     name: str
+    mal_id: int | None
     source: str | None
     image: str
-    image_fallback: str
-    image_small: str
+    image_fallback: str | None
+    image_small: str | None
     rarity: ItemRarity
 
     model_config = ConfigDict(from_attributes=True)

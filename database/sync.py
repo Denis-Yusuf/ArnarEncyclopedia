@@ -8,6 +8,10 @@ from database.models import Banner, BannerItem, Item, ItemRarity
 
 
 async def import_items(filename):
+    """
+    Import items from csv. Items will be appended to the table. Make sure no ids overlap.
+    (Leave it out or something)
+    """
     uri = os.getenv("DATABASE_URL")
     uri = uri.replace("+aiosqlite", "")
 
@@ -16,6 +20,10 @@ async def import_items(filename):
 
 
 async def export_items(filename):
+    """
+    Export items to csv. It is very important that (one of) the first rows contains a non-null value
+    in nullable columns. Otherwise, it will fail, as ADBC will infer the column as INT64.
+    """
     uri = os.getenv("DATABASE_URL")
     uri = uri.replace("+aiosqlite", "")
 

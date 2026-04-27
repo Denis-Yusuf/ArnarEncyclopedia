@@ -15,4 +15,4 @@ Garbage ass bot for discord.
 
 ## Datasets
 
-This repository contains processed data of the following dataset: https://www.kaggle.com/datasets/sazzadsiddiquelikhon/anime-character-database-july-2025 Licensed under (ODbL)[https://opendatacommons.org/licenses/odbl/1-0/]
+This repository contains processed data of the following dataset: https://www.kaggle.com/datasets/sazzadsiddiquelikhon/anime-character-database-july-2025 Licensed under [ODbL](https://opendatacommons.org/licenses/odbl/1-0/)

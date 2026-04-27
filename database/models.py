@@ -69,12 +69,12 @@ class Item(Base):
     __tablename__ = "items"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    mal_id: Mapped[int] = mapped_column(index=True)
     name: Mapped[str] = mapped_column(index=True)
+    mal_id: Mapped[int] = mapped_column(nullable=True)
     source: Mapped[str] = mapped_column(nullable=True)
     image: Mapped[str] = mapped_column()
-    image_fallback: Mapped[str] = mapped_column()
-    image_small: Mapped[str] = mapped_column()
+    image_fallback: Mapped[str] = mapped_column(nullable=True)
+    image_small: Mapped[str] = mapped_column(nullable=True)
     rarity: Mapped[ItemRarity] = mapped_column(IntEnumType(ItemRarity))
     active: Mapped[bool] = mapped_column(default=True)
 
