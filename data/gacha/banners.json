@@ -1,0 +1,30 @@
+[
+    {
+        "name": "banner1",
+        "items": [
+            {
+                "item_id": 1,
+                "weight": 10
+            },
+            {
+                "item_id": 3,
+                "weight": 20
+            }
+        ],
+        "active": true
+    },
+    {
+        "name": "banner2",
+        "items": [
+            {
+                "item_id": 0,
+                "weight": 1
+            },
+            {
+                "item_id": 2,
+                "weight": 2
+            }
+        ],
+        "active": false
+    }
+]

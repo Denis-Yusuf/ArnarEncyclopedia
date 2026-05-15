@@ -1,4 +1,9 @@
+aiosqlite
+alembic
 discord.py[voice]
-yt-dlp
-spotipy
+polars[adbc]
+pydantic
 python-dotenv
+spotipy
+sqlalchemy
+yt-dlp
