@@ -75,8 +75,8 @@ class SaltBot(commands.Bot):
             traceback.print_exception(type(error), error, error.__traceback__)
             description = f"An unexpected error ocurred.\n```{error}```"
 
-        embed = discord.Embed(title="❌ Error", description=description, color=discord.Color.red())
-        await ctx.send(embed=embed, ephemeral=True)
+        embed = discord.Embed(title = "❌ Error", description = description, color = discord.Color.red())
+        await ctx.send(embed = embed, ephemeral = True)
 
     async def on_app_command_error(
             self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
@@ -94,12 +94,13 @@ class SaltBot(commands.Bot):
             traceback.print_exception(type(error), error, error.__traceback__)
             description = f"An unexpected error ocurred.\n```{error}```"
 
-        embed = discord.Embed(title="❌ Error", description=description, color=discord.Color.red())
+        embed = discord.Embed(title = "❌ Error", description = description, color = discord.Color.red())
 
         if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed = embed, ephemeral = True)
         else:
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.response.send_message(embed = embed, ephemeral = True)
+
 async def main() -> None:
     discord.utils.setup_logging()
     intents = discord.Intents.default()
