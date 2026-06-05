@@ -9,6 +9,7 @@ services:
       - MUDAI_CHANNEL_ID=${MUDAI_CHANNEL_ID}
       - BIRTHDAY_CHANNEL_ID=${BIRTHDAY_CHANNEL_ID}
       - DATABASE_URL=${DATABASE_URL}
+      - MUSIC_CHANNEL_ID=${MUSIC_CHANNEL_ID}
     volumes:
       - eggbot_data:/EggData
 
