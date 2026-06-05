@@ -31,7 +31,8 @@ class SaltBot(commands.Bot):
             client_id = os.getenv("SPOTIFY_CLIENT_ID"),
             client_secret = os.getenv("SPOTIFY_CLIENT_SECRET"),
         )
-        await self.add_cog(MusicCog(self, youtube, spotify))
+        music_channel_id = int(os.getenv("MUSIC_CHANNEL_ID") or 0) or None
+        await self.add_cog(MusicCog(self, youtube, spotify, music_channel_id))
         await self.add_cog(Eggcog(self))
         await self.add_cog(PresenceCog(self))
         await self.add_cog(BirthdaySchedulerCog(self))

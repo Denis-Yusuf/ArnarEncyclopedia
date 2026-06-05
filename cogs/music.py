@@ -230,15 +230,23 @@ class SeekSelect(discord.ui.Select):
 class MusicCog(commands.Cog):
     """Handles all music commands and keeps per-guild playback state."""
 
-    def __init__(self, bot: commands.Bot, youtube: YouTubeService, spotify: SpotifyService) -> None:
+    def __init__(
+        self,
+        bot: commands.Bot,
+        youtube: YouTubeService,
+        spotify: SpotifyService,
+        music_channel_id: int | None = None,
+    ) -> None:
         """
         :param bot: The running Discord bot instance.
         :param youtube: Used for audio extraction.
         :param spotify: Used for track resolution.
+        :param music_channel_id: All output messages are sent here regardless of invocation channel.
         """
         self.bot = bot
         self.youtube = youtube
         self.spotify = spotify
+        self._music_channel_id = music_channel_id
         # All state is keyed by guild ID so the bot works across multiple servers
         self._queues: dict[int, list[dict]] = {}
         self._loop: dict[int, bool] = {}
@@ -247,6 +255,72 @@ class MusicCog(commands.Cog):
         self._now_playing_messages: dict[int, discord.Message] = {}
         self._now_playing_views: dict[int, NowPlayingView] = {}
         self._seek_to: dict[int, int] = {}
+
+    # ------------------------------------------------------------------
+    # Output-channel helpers
+    # ------------------------------------------------------------------
+
+    def _get_output_channel(self, ctx: commands.Context) -> discord.abc.Messageable:
+        """
+        Returns the configured music channel if set and resolvable, otherwise ctx.channel.
+
+        :param ctx: The invocation context.
+        :return: The channel where output messages should be sent.
+        """
+        if self._music_channel_id:
+            ch = self.bot.get_channel(self._music_channel_id)
+            if ch:
+                return ch
+        return ctx.channel
+
+    async def _ensure_ack(self, ctx: commands.Context) -> None:
+        """
+        Silently defers a pending slash interaction when output is routed to a different channel.
+        Must be called before any ``typing()`` context manager in methods that do not send first.
+
+        :param ctx: The invocation context.
+        """
+        channel = self._get_output_channel(ctx)
+        if (
+            ctx.interaction is not None
+            and not ctx.interaction.response.is_done()
+            and channel.id != ctx.channel.id
+        ):
+            await ctx.interaction.response.defer(ephemeral = True)
+
+    async def _send(self, ctx: commands.Context, *args, **kwargs) -> discord.Message:
+        """
+        Sends to the output channel.
+        When redirecting to a different channel, any unacknowledged slash interaction is deferred
+        ephemerally first so Discord does not show "interaction failed".
+
+        :param ctx: The invocation context.
+        :return: The sent message.
+        """
+        channel = self._get_output_channel(ctx)
+        if channel.id != ctx.channel.id:
+            if ctx.interaction is not None and not ctx.interaction.response.is_done():
+                await ctx.interaction.response.defer(ephemeral = True)
+            return await channel.send(*args, **kwargs)
+        return await ctx.send(*args, **kwargs)
+
+    def _typing(self, ctx: commands.Context):
+        """
+        Returns a typing context manager for the output channel.
+        Falls back to ctx.typing() when no redirect is needed so slash commands
+        get their interaction deferred automatically.
+
+        :param ctx: The invocation context.
+        :return: An async context manager that shows a typing indicator.
+        """
+        channel = self._get_output_channel(ctx)
+        if channel.id != ctx.channel.id:
+            return channel.typing()
+        return ctx.typing()
+
+    # ------------------------------------------------------------------
+    # Queue / state accessors
+    # ------------------------------------------------------------------
 
     def get_queue(self, guild_id: int) -> list[dict]:
         """
@@ -329,7 +403,7 @@ class MusicCog(commands.Cog):
             self._disconnect_tasks.pop(ctx.guild.id, None)
             await self._clear_now_playing(ctx.guild.id)
             await ctx.voice_client.disconnect()
-            await ctx.send("Disconnected due to {} minutes of inactivity.".format(round(time / 60)))
+            await self._send(ctx, "Disconnected due to {} minutes of inactivity.".format(round(time / 60)))
 
     async def _clear_now_playing(self, guild_id: int) -> None:
         """
@@ -384,11 +458,11 @@ class MusicCog(commands.Cog):
             try:
                 audio_url, _, _, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
             except asyncio.TimeoutError:
-                await ctx.send(f"Timed out fetching **{title}**, skipping.")
+                await self._send(ctx, f"Timed out fetching **{title}**, skipping.")
                 await self._play_next(ctx)
                 return
             except yt_dlp.utils.DownloadError:
-                await ctx.send(f"Could not load **{title}**, skipping.")
+                await self._send(ctx, f"Could not load **{title}**, skipping.")
                 await self._play_next(ctx)
                 return
 
@@ -427,7 +501,7 @@ class MusicCog(commands.Cog):
         )
         if thumbnail:
             embed.set_image(url = thumbnail)
-        msg = await ctx.send(content = f'Now playing: **{title}**', embed = embed, view = view)
+        msg = await self._send(ctx, content = f'Now playing: **{title}**', embed = embed, view = view)
         self._now_playing_messages[ctx.guild.id] = msg
         self._now_playing_views[ctx.guild.id] = view
 
@@ -459,16 +533,16 @@ class MusicCog(commands.Cog):
             return
 
         item = queue.pop(0)
-        async with ctx.typing():
+        async with self._typing(ctx):
             try:
                 audio_url, title, webpage_url, thumbnail, uploader, duration = await self.youtube.fetch_audio(item['query'])
             except asyncio.TimeoutError:
-                await ctx.send(f"Timed out fetching **{item['title']}**, skipping.")
+                await self._send(ctx, f"Timed out fetching **{item['title']}**, skipping.")
                 # Recurse so the next item is attempted rather than leaving the queue stalled
                 await self._play_next(ctx)
                 return
             except yt_dlp.utils.DownloadError:
-                await ctx.send(f"Could not load **{item['title']}**, skipping.")
+                await self._send(ctx, f"Could not load **{item['title']}**, skipping.")
                 await self._play_next(ctx)
                 return
         try:
@@ -478,7 +552,7 @@ class MusicCog(commands.Cog):
             )
         except Exception as exc:
             print(f"[MusicCog] Unexpected error during playback in guild {ctx.guild.id}: {exc}")
-            await ctx.send(f"Unexpected error playing **{title}**, skipping.")
+            await self._send(ctx, f"Unexpected error playing **{title}**, skipping.")
             await self._play_next(ctx)
 
     async def _play_in_voice(self, ctx: commands.Context, query: str) -> None:
@@ -490,7 +564,7 @@ class MusicCog(commands.Cog):
         :param query: yt-dlp compatible query string (URL or 'ytsearch:...' prefix).
         """
         if not ctx.author.voice:
-            await ctx.send("You must be in a voice channel.")
+            await self._send(ctx, "You must be in a voice channel.")
             return
 
         channel = ctx.author.voice.channel
@@ -499,33 +573,35 @@ class MusicCog(commands.Cog):
         elif ctx.voice_client.channel != channel:
             await ctx.voice_client.move_to(channel)
 
+        await self._ensure_ack(ctx)
+
         if ctx.voice_client.is_playing():
             # Something is already playing — only need the title to dedup and queue
-            async with ctx.typing():
+            async with self._typing(ctx):
                 try:
                     title, _ = await self.youtube.fetch_metadata(query)
                 except asyncio.TimeoutError:
-                    await ctx.send("Search timed out. Try again or use a direct URL.")
+                    await self._send(ctx, "Search timed out. Try again or use a direct URL.")
                     return
                 except yt_dlp.utils.DownloadError:
-                    await ctx.send("No results found for that query.")
+                    await self._send(ctx, "No results found for that query.")
                     return
             if self._is_queued(ctx.guild.id, title):
-                await ctx.send(f'**{title}** is already in the queue.')
+                await self._send(ctx, f'**{title}** is already in the queue.')
                 return
             self.get_queue(ctx.guild.id).append({"query": query, "title": title})
-            await ctx.send(f'Added to queue: **{title}**')
+            await self._send(ctx, f'Added to queue: **{title}**')
             return
 
         # Nothing playing — fetch the full audio info so _stream doesn't have to
-        async with ctx.typing():
+        async with self._typing(ctx):
             try:
                 audio_url, title, webpage_url, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
             except asyncio.TimeoutError:
-                await ctx.send("Search timed out. Try again or use a direct URL.")
+                await self._send(ctx, "Search timed out. Try again or use a direct URL.")
                 return
             except yt_dlp.utils.DownloadError:
-                await ctx.send("No results found for that query.")
+                await self._send(ctx, "No results found for that query.")
                 return
 
         ctx.voice_client.stop()
@@ -543,7 +619,7 @@ class MusicCog(commands.Cog):
         :param url: A YouTube playlist or video-in-playlist URL.
         """
         if not ctx.author.voice:
-            await ctx.send("You must be in a voice channel.")
+            await self._send(ctx, "You must be in a voice channel.")
             return
 
         channel = ctx.author.voice.channel
@@ -552,18 +628,20 @@ class MusicCog(commands.Cog):
         elif ctx.voice_client.channel != channel:
             await ctx.voice_client.move_to(channel)
 
-        async with ctx.typing():
+        await self._ensure_ack(ctx)
+
+        async with self._typing(ctx):
             try:
                 entries = await self.youtube.fetch_playlist(url)
             except asyncio.TimeoutError:
-                await ctx.send("Playlist fetch timed out. Try again.")
+                await self._send(ctx, "Playlist fetch timed out. Try again.")
                 return
             except yt_dlp.utils.DownloadError:
-                await ctx.send("Could not load that playlist.")
+                await self._send(ctx, "Could not load that playlist.")
                 return
 
             if not entries:
-                await ctx.send("The playlist appears to be empty or unavailable.")
+                await self._send(ctx, "The playlist appears to be empty or unavailable.")
                 return
 
             capped = len(entries) > PLAYLIST_CAP
@@ -581,7 +659,7 @@ class MusicCog(commands.Cog):
                         first_entry = queue[-1]
 
             cap_note = f" *(capped at {PLAYLIST_CAP})*" if capped else ""
-            await ctx.send(f'Added **{added}** song(s) from playlist to queue{cap_note}.')
+            await self._send(ctx, f'Added **{added}** song(s) from playlist to queue{cap_note}.')
 
             first_audio = None
             if not ctx.voice_client.is_playing() and first_entry:
@@ -591,7 +669,7 @@ class MusicCog(commands.Cog):
                 try:
                     first_audio = await self.youtube.fetch_audio(item['query'])
                 except (asyncio.TimeoutError, yt_dlp.utils.DownloadError):
-                    await ctx.send(f"Could not load **{item['title']}**, skipping to next.")
+                    await self._send(ctx, f"Could not load **{item['title']}**, skipping to next.")
                     await self._play_next(ctx)
                     return
 
@@ -604,7 +682,7 @@ class MusicCog(commands.Cog):
                 )
             except Exception as exc:
                 print(f"[MusicCog] Unexpected error during playback in guild {ctx.guild.id}: {exc}")
-                await ctx.send(f"Unexpected error playing **{title}**, skipping.")
+                await self._send(ctx, f"Unexpected error playing **{title}**, skipping.")
                 await self._play_next(ctx)
 
     @commands.hybrid_command(name = 'play', description = 'Play from a YouTube URL, playlist, Spotify URL, or search query.')
@@ -625,9 +703,9 @@ class MusicCog(commands.Cog):
         elif 'spotify.com' in query:
             search_query = self.spotify.resolve_query(query)
             if not search_query:
-                await ctx.send("No results found on Spotify.")
+                await self._send(ctx, "No results found on Spotify.")
                 return
-            await ctx.send(f'Found: **{search_query}** — searching YouTube...')
+            await self._send(ctx, f'Found: **{search_query}** — searching YouTube...')
             await self._play_in_voice(ctx, f'ytsearch:{search_query}')
         else:
             await self._play_in_voice(ctx, self.youtube.build_query(query))
@@ -645,11 +723,11 @@ class MusicCog(commands.Cog):
             await ctx.message.delete()
         queue = self.get_queue(ctx.guild.id)
         if not queue:
-            await ctx.send("The queue is empty.")
+            await self._send(ctx, "The queue is empty.")
             return
         lines = [f"`{position + 1}.` {item['title']}" for position, item in enumerate(queue)]
         suffix = f"\n*Showing first 25 of {len(queue)} songs.*" if len(queue) > 25 else ""
-        await ctx.send("**Queue:**\n" + "\n".join(lines) + suffix, view = QueueView(self, ctx))
+        await self._send(ctx, "**Queue:**\n" + "\n".join(lines) + suffix, view = QueueView(self, ctx))
 
     @commands.hybrid_command(name = 'clear', description = 'Clear all songs from the queue.')
     async def clear_cmd(self, ctx: commands.Context) -> None:
@@ -662,11 +740,11 @@ class MusicCog(commands.Cog):
             await ctx.message.delete()
         queue = self.get_queue(ctx.guild.id)
         if not queue:
-            await ctx.send("The queue is already empty.")
+            await self._send(ctx, "The queue is already empty.")
             return
         count = len(queue)
         queue.clear()
-        await ctx.send(f'Cleared **{count}** song(s) from the queue.')
+        await self._send(ctx, f'Cleared **{count}** song(s) from the queue.')
 
     @commands.hybrid_command(name = 'shuffle', description = 'Shuffle the song queue.')
     async def shuffle_cmd(self, ctx: commands.Context) -> None:
@@ -680,10 +758,10 @@ class MusicCog(commands.Cog):
             await ctx.message.delete()
         queue = self.get_queue(ctx.guild.id)
         if len(queue) < 2:
-            await ctx.send("Not enough songs in the queue to shuffle.")
+            await self._send(ctx, "Not enough songs in the queue to shuffle.")
             return
         random.shuffle(queue)
-        await ctx.send("Queue shuffled.")
+        await self._send(ctx, "Queue shuffled.")
 
     @commands.hybrid_command(name = 'remove', description = 'Remove a song from the queue by its position number.')
     async def remove_cmd(self, ctx: commands.Context, index: int) -> None:
@@ -697,10 +775,10 @@ class MusicCog(commands.Cog):
             await ctx.message.delete()
         queue = self.get_queue(ctx.guild.id)
         if index < 1 or index > len(queue):
-            await ctx.send(f"Invalid position. Queue has **{len(queue)}** item(s).")
+            await self._send(ctx, f"Invalid position. Queue has **{len(queue)}** item(s).")
             return
         removed = queue.pop(index - 1)
-        await ctx.send(f'Removed: **{removed["title"]}**')
+        await self._send(ctx, f'Removed: **{removed["title"]}**')
 
     @commands.hybrid_command(name = 'skip', description = 'Skip the current song.')
     async def skip_cmd(self, ctx: commands.Context) -> None:
@@ -713,9 +791,9 @@ class MusicCog(commands.Cog):
             await ctx.message.delete()
         if ctx.voice_client and ctx.voice_client.is_playing():
             ctx.voice_client.stop()
-            await ctx.send("Skipped.")
+            await self._send(ctx, "Skipped.")
         else:
-            await ctx.send("Nothing is playing.")
+            await self._send(ctx, "Nothing is playing.")
 
     @commands.hybrid_command(name = 'loop', description = 'Toggle loop mode for the current song.')
     async def loop_cmd(self, ctx: commands.Context) -> None:
@@ -730,7 +808,7 @@ class MusicCog(commands.Cog):
         enabled = not self.is_looping(ctx.guild.id)
         self.set_loop(ctx.guild.id, enabled)
         state = "enabled" if enabled else "disabled"
-        await ctx.send(f'Loop {state}.')
+        await self._send(ctx, f'Loop {state}.')
 
     @commands.hybrid_command(name = 'pause', description = 'Toggle pause/resume.')
     async def pause_cmd(self, ctx: commands.Context) -> None:
@@ -743,16 +821,16 @@ class MusicCog(commands.Cog):
             await ctx.message.delete()
         vc = ctx.voice_client
         if not vc:
-            await ctx.send("Not connected to a voice channel.")
+            await self._send(ctx, "Not connected to a voice channel.")
             return
         if vc.is_paused():
             vc.resume()
-            await ctx.send("Resumed.")
+            await self._send(ctx, "Resumed.")
         elif vc.is_playing():
             vc.pause()
-            await ctx.send("Paused.")
+            await self._send(ctx, "Paused.")
         else:
-            await ctx.send("Nothing is playing.")
+            await self._send(ctx, "Nothing is playing.")
 
     @commands.hybrid_command(name = 'stop', description = 'Stop playback, clear the queue, and disconnect.')
     async def stop_cmd(self, ctx: commands.Context) -> None:
@@ -772,6 +850,6 @@ class MusicCog(commands.Cog):
             await self._clear_now_playing(ctx.guild.id)
             ctx.voice_client.stop()
             await ctx.voice_client.disconnect()
-            await ctx.send("Stopped.")
+            await self._send(ctx, "Stopped.")
         else:
-            await ctx.send("Not connected to a voice channel.")
+            await self._send(ctx, "Not connected to a voice channel.")
