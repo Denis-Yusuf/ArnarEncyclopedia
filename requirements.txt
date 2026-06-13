@@ -7,3 +7,4 @@ python-dotenv
 spotipy
 sqlalchemy
 yt-dlp
+regex
