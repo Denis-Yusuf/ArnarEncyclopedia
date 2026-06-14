@@ -14,6 +14,7 @@ from cogs.clanker import ClankerCog
 from cogs.presence import PresenceCog
 from cogs.gamba import GambaCog
 from cogs.blacklist import BlacklistCog
+from cogs.autorole import AutoroleCOG
 from services.spotify import SpotifyService
 from services.youtube import YouTubeService
 
@@ -41,6 +42,7 @@ class SaltBot(commands.Bot):
         await self.add_cog(ClankerCog(self))
         await self.add_cog(GambaCog(self))
         await self.add_cog(BlacklistCog(self, modlog_channel_id))
+        await self.add_cog(AutoroleCOG(self))
         # Remove any previously registered global commands from Discord's API.
         # We save and restore the in-memory commands so copy_global_to still works in on_ready.
         global_commands = self.tree.get_commands()
@@ -109,6 +111,7 @@ async def main() -> None:
     discord.utils.setup_logging()
     intents = discord.Intents.default()
     intents.message_content = True
+    intents.members = True
 
     async with SaltBot(command_prefix = '/', intents = intents) as bot:
         await bot.start(os.getenv("TOKEN"))

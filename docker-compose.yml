@@ -11,6 +11,7 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - MUSIC_CHANNEL_ID=${MUSIC_CHANNEL_ID}
       - MODLOG_CHANNEL_ID=${MODLOG_CHANNEL_ID}
+      - AUTOROLE_ID=${AUTOROLE_ID}
     volumes:
       - eggbot_data:/EggData
 

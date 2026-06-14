@@ -19,10 +19,10 @@ class  BlacklistCog(commands.Cog):
             return
         if bool(re.match("[Ll]\\s*[uU]\\s*[Cc]\\s*[yY]", message.content)):
             channel = self.bot.get_channel(self._modlog_channel_id)
-            await message.delete()
             embed = Embed(
-                title="Message Deleted",
-                description=f"**Offender**: <@{message.author.id}>\n**Reason**: Think about it for a bit, dawg.\n **Responsible Moderator**: The Goat Himself, Me",
+                title = "Message Deleted",
+                description = f"**Offender**: <@{message.author.id}>\n**Reason**: Think about it for a bit, dawg.\n **Responsible Moderator**: The Goat Himself, Me",
             )
+            await message.delete()
             await channel.send(embed = embed)
 
