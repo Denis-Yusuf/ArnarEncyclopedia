@@ -18,6 +18,7 @@ class ClankerCog(commands.Cog):
         self.default_quotes: list[str] = data["Default"]
         self.ma_channel_id = int(os.getenv("MUDAI_CHANNEL_ID"))
 
+        self.enabled = True
         self.window_seconds = 10      # interval to track
         self.max_messages = 5         # messages before chance hits 0
         self.recent_messages = deque() # timestamps of recent triggers
@@ -32,8 +33,23 @@ class ClankerCog(commands.Cog):
         # linear drop: 0 messages = 100%, max_messages = 0%
         return max(0.0, 1.0 - (count / self.max_messages))
 
+    @commands.hybrid_command(name = "clanker", description = "Make this dipshit shut the fuck up.")
+    @commands.has_permissions(administrator = True)
+    async def clanker_toggle(self, ctx: commands.Context) -> None:
+        """
+        Toggles the Clanker auto-response listener on or off.
+
+        :param ctx: The invocation context.
+        """
+        self.enabled = not self.enabled
+        state = "enabled" if self.enabled else "disabled"
+        await ctx.send(f"Malware **{state}**.", delete_after = 5)
+        await ctx.message.delete()
+
     @commands.Cog.listener()
     async def on_message(self, message):
+        if not self.enabled:
+            return
         if message.author == self.bot.user:
             return
         if message.channel.id == self.ma_channel_id:
