@@ -43,7 +43,7 @@ class ClankerCog(commands.Cog):
         """
         self.enabled = not self.enabled
         state = "enabled" if self.enabled else "disabled"
-        await ctx.send(f"Malware **{state}**.", delete_after = 10)
+        await ctx.send(f"Malware **{state}**.", ephemeral = False)
 
     @commands.Cog.listener()
     async def on_message(self, message):
