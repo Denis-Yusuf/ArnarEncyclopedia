@@ -33,7 +33,7 @@ class ClankerCog(commands.Cog):
         # linear drop: 0 messages = 100%, max_messages = 0%
         return max(0.0, 1.0 - (count / self.max_messages))
 
-    @commands.hybrid_command(name = "clanker", description = "Make this dipshit shut the fuck up.")
+    @commands.hybrid_command(name = "shutthefuckup", description = "Make this dipshit shut the fuck up.")
     @commands.has_permissions(administrator = True)
     async def clanker_toggle(self, ctx: commands.Context) -> None:
         """
