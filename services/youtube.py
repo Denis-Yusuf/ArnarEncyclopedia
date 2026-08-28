@@ -3,10 +3,13 @@ import re
 
 import yt_dlp
 
+REMOTE_COMPONENTS = ['ejs:github']
+
 YTDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': True,
     'quiet': True,
+    'remote_components': REMOTE_COMPONENTS,
 }
 
 YTDL_PLAYLIST_OPTIONS = {
@@ -14,6 +17,7 @@ YTDL_PLAYLIST_OPTIONS = {
     # extract_flat skips resolving individual video pages, returning only metadata
     'extract_flat': 'in_playlist',
     'noplaylist': False,
+    'remote_components': REMOTE_COMPONENTS,
 }
 
 YTDL_METADATA_OPTIONS = {
@@ -22,6 +26,7 @@ YTDL_METADATA_OPTIONS = {
     # extract_flat avoids opening individual video pages for search results,
     # making title lookups significantly faster for ytsearch: queries
     'extract_flat': True,
+    'remote_components': REMOTE_COMPONENTS,
 }
 
 FFMPEG_OPTIONS = {
