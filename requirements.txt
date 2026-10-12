@@ -5,6 +5,6 @@ polars[adbc]
 pydantic
 python-dotenv
 spotipy
-sqlalchemy
+sqlalchemy[asyncio]
 yt-dlp
 regex
