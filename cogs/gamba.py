@@ -172,7 +172,7 @@ class GambaCog(commands.Cog):
             stmt = select(exists().select_from(Item))
             if not await db.scalar(stmt):
                 logging.info("Importing items...")
-                await sync.import_items(self.data_dir / "items.csv")
+                await sync.import_items(db, self.data_dir / "items.csv")
                 await db.execute(
                     text(
                         """
