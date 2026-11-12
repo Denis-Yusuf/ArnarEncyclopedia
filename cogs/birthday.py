@@ -1,11 +1,13 @@
 import discord
 import os
-import json
 import datetime as dt
 
-from pathlib import Path
 from discord.ext import commands, tasks
 from discord import app_commands
+from sqlalchemy import select
+
+from database.database import SessionLocal
+from database.models import Birthday
 
 DEFAULT_MESSAGE = "Happy Birthday %n!"
 DEFAULT_ROLE = "everyone"
@@ -19,40 +21,7 @@ class DateTransformer(app_commands.Transformer):
         return dt.datetime.strptime(value, "%d-%m")
 
 
-def _load_birthdays(path: str = "birthdays.json") -> dict:
-    """
-    Load birthdays from a JSON file.
-    If the file doesn't exist, it creates an empty one.
-
-    :param path: Path to the JSON file. Defaults to 'birthdays.json'.
-    :return: A dictionary of birthdays keyed by user ID.
-    """
-    file = Path(path)
-    if file.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                pass
-
-    file.parent.mkdir(parents=True, exist_ok=True)
-    with file.open("w", encoding="utf-8") as f:
-        json.dump({}, f, indent=4)
-    return {}
-
-
-def _save_birthdays(data: dict, path: str = "birthdays.json") -> None:
-    """
-    Save the birthdays dictionary to a JSON file.
-
-    :param data: The birthdays dictionary to save.
-    :param path: Path to the JSON file. Defaults to 'birthdays.json'.
-    """
-    with open(path, "w") as f:
-        json.dump(data, f, indent=4)
-
-
-def _replace_placeholders(message: str, uid: str) -> str:
+def _replace_placeholders(message: str, uid: int) -> str:
     """
     Replace placeholders in a birthday message with their actual values.
 
@@ -74,7 +43,6 @@ class BirthdaySchedulerCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.birthdays: dict = _load_birthdays()
         self.birthday_channel = int(os.getenv("BIRTHDAY_CHANNEL_ID"))
 
     def cog_load(self) -> None:
@@ -139,15 +107,20 @@ class BirthdaySchedulerCog(commands.Cog):
         :param message: Optional custom birthday message. Use DEFAULT to fall back to the global message.
         """
         user = user or ctx.author
-        uid = str(user.id)
+        date_text = date.strftime("%d-%m")
 
-        if self.birthdays.get(uid) is None:
-            self.birthdays[uid] = {
-                "date": date.strftime("%d-%m"),
-                "message": message or "DEFAULT",
-            }
-            _save_birthdays(self.birthdays)
+        async with SessionLocal.begin() as db:
+            birthday = await db.get(Birthday, user.id)
+            is_new = birthday is None
+            if is_new:
+                db.add(Birthday(user_id=user.id, date=date_text, message=message or "DEFAULT"))
+            else:
+                # Read here: ORM objects expire once the session commits.
+                existing_message = birthday.message
+                birthday.date = date_text
+                birthday.message = message or existing_message
 
+        if is_new:
             embed = discord.Embed(
                 title=f"🎂 {user.display_name}'s birthday saved",
                 color=discord.Color.greyple()
@@ -158,13 +131,6 @@ class BirthdaySchedulerCog(commands.Cog):
             embed.set_footer(text="Use %n as a placeholder for the user's name.\nUse %r to mention the default role.\nDEFAULT will use the default set message.")
             await ctx.send(embed=embed)
         else:
-            existing_message = self.birthdays.get(uid, {}).get("message")
-            self.birthdays[uid] = {
-                "date": date.strftime("%d-%m"),
-                "message": message or existing_message,
-            }
-            _save_birthdays(self.birthdays)
-
             embed = discord.Embed(
                 title=f"🎂 {user.display_name}'s birthday updated",
                 color=discord.Color.blurple()
@@ -185,12 +151,13 @@ class BirthdaySchedulerCog(commands.Cog):
         :param user: The member whose birthday to remove.
         """
         user = user or ctx.author
-        uid = str(user.id)
 
-        if uid in self.birthdays:
-            del self.birthdays[uid]
-            _save_birthdays(self.birthdays)
+        async with SessionLocal.begin() as db:
+            birthday = await db.get(Birthday, user.id)
+            if birthday is not None:
+                await db.delete(birthday)
 
+        if birthday is not None:
             embed = discord.Embed(
                 title=f"🗑️ {user.display_name}'s birthday removed",
                 color=discord.Color.greyple()
@@ -214,7 +181,10 @@ class BirthdaySchedulerCog(commands.Cog):
 
         :param ctx: The invocation context.
         """
-        if not self.birthdays:
+        async with SessionLocal() as db:
+            birthdays = (await db.scalars(select(Birthday))).all()
+
+        if not birthdays:
             embed = discord.Embed(
                 description="No birthdays saved.",
                 color=discord.Color.orange()
@@ -226,18 +196,18 @@ class BirthdaySchedulerCog(commands.Cog):
             title="🎂 Birthday calendar",
             color=discord.Color.blurple()
         )
-        for uid, data in self.birthdays.items():
-            user = await ctx.guild.fetch_member(int(uid))
-            name = user.display_name if user else f"Unknown ({uid})"
-            date = data["date"]
-            message = data["message"] if data["message"] != "DEFAULT" else DEFAULT_MESSAGE
+        for birthday in birthdays:
+            user = await ctx.guild.fetch_member(birthday.user_id)
+            name = user.display_name if user else f"Unknown ({birthday.user_id})"
+            date = birthday.date
+            message = birthday.message if birthday.message != "DEFAULT" else DEFAULT_MESSAGE
             embed.add_field(
                 name=f"{name} — {date}",
                 value=f"_{message}_",
                 inline=False
             )
 
-        embed.set_footer(text=f"{len(self.birthdays)} birthday(s) saved")
+        embed.set_footer(text=f"{len(birthdays)} birthday(s) saved")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="birthday-get", description="Show the birthday of a specific user")
@@ -250,9 +220,11 @@ class BirthdaySchedulerCog(commands.Cog):
         :param user: The member whose birthday to look up. Defaults to the author.
         """
         user = user or ctx.author
-        uid = str(user.id)
 
-        if uid not in self.birthdays:
+        async with SessionLocal() as db:
+            birthday = await db.get(Birthday, user.id)
+
+        if birthday is None:
             embed = discord.Embed(
                 description=f"No birthday found for {user.display_name}.",
                 color=discord.Color.red()
@@ -260,9 +232,8 @@ class BirthdaySchedulerCog(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        birthday = self.birthdays[uid]
-        date = birthday["date"]
-        message = birthday["message"] if birthday["message"] != "DEFAULT" else DEFAULT_MESSAGE
+        date = birthday.date
+        message = birthday.message if birthday.message != "DEFAULT" else DEFAULT_MESSAGE
 
         embed = discord.Embed(
             title=f"🎂 {user.display_name}'s birthday",
@@ -287,13 +258,14 @@ class BirthdaySchedulerCog(commands.Cog):
         if channel is None:
             raise commands.ChannelNotFound("Channel not found.")
 
-        for uid, data in self.birthdays.items():
-            message = data["message"]
+        async with SessionLocal() as db:
+            birthdays = (await db.scalars(select(Birthday).where(Birthday.date == today))).all()
 
-            if data["date"] != today:
-                continue
+        for birthday in birthdays:
+            uid = birthday.user_id
+            message = birthday.message
             try:
-                member = await channel.guild.fetch_member(int(uid))
+                member = await channel.guild.fetch_member(uid)
                 if member is None:
                     raise commands.UserNotFound("User not found.")
 
