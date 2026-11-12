@@ -17,12 +17,14 @@ class  BlacklistCog(commands.Cog):
         """
         if message.author == self.bot.user:
             return
-        if bool(re.match("[Ll]\\s*[uU]\\s*[Cc]\\s*[yY]", message.content)):
-            channel = self.bot.get_channel(self._modlog_channel_id)
+        # search, not match: match only looks at the start of the message.
+        if bool(re.search("[Ll]\\s*[uU]\\s*[Cc]\\s*[yY]", message.content)):
+            channel = self.bot.get_channel(self._modlog_channel_id) if self._modlog_channel_id else None
             embed = Embed(
                 title = "Message Deleted",
                 description = f"**Offender**: <@{message.author.id}>\n**Reason**: Think about it for a bit, dawg.\n **Responsible Moderator**: The Goat Himself, Me",
             )
             await message.delete()
-            await channel.send(embed = embed)
+            if channel is not None:
+                await channel.send(embed = embed)
 
