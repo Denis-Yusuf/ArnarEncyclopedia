@@ -255,11 +255,19 @@ class BirthdaySchedulerCog(commands.Cog):
         today = dt.datetime.now().strftime("%d-%m")
         channel = self.bot.get_channel(self.birthday_channel)
 
+        # An error that escapes a tasks.loop stops it for good, so report and skip today instead of raising.
         if channel is None:
-            raise commands.ChannelNotFound("Channel not found.")
+            await self.bot.report_error(
+                "birthday check", f"Birthday channel {self.birthday_channel} not found, skipping today's check."
+            )
+            return
 
-        async with SessionLocal() as db:
-            birthdays = (await db.scalars(select(Birthday).where(Birthday.date == today))).all()
+        try:
+            async with SessionLocal() as db:
+                birthdays = (await db.scalars(select(Birthday).where(Birthday.date == today))).all()
+        except Exception as e:
+            await self.bot.report_error("birthday check", e)
+            return
 
         for birthday in birthdays:
             uid = birthday.user_id
