@@ -274,7 +274,7 @@ class BirthdaySchedulerCog(commands.Cog):
                 message = _replace_placeholders(message, uid)
                 await channel.send(message)
             except Exception as e:
-                print(f"Error thrown at birthday of uid:{uid}:\n {e}")
+                await self.bot.report_error(f"birthday of user {uid}", e)
 
     @check_birthdays.before_loop
     async def before_check(self):

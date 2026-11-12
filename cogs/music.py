@@ -484,9 +484,15 @@ class MusicCog(commands.Cog):
         done = asyncio.Event()
 
         def after_playing(error):
-            if error:
-                print(f"[MusicCog] Playback error in guild {ctx.guild.id}: {error}")
-            done.set()
+            try:
+                if error:
+                    # This callback runs in the audio thread, so hand the coroutine to the bot's loop.
+                    asyncio.run_coroutine_threadsafe(
+                        self.bot.report_error(f"music playback in {ctx.guild.name}", error), self.bot.loop
+                    )
+            finally:
+                # Always release _stream, even if reporting fails (e.g. the loop is closing).
+                done.set()
 
         ctx.voice_client.play(source, after = after_playing)
 
@@ -551,7 +557,7 @@ class MusicCog(commands.Cog):
                 audio_url = audio_url, thumbnail = thumbnail, uploader = uploader, duration = duration,
             )
         except Exception as exc:
-            print(f"[MusicCog] Unexpected error during playback in guild {ctx.guild.id}: {exc}")
+            await self.bot.report_error(f"music playback in {ctx.guild.name}", exc)
             await self._send(ctx, f"Unexpected error playing **{title}**, skipping.")
             await self._play_next(ctx)
 
@@ -681,7 +687,7 @@ class MusicCog(commands.Cog):
                     audio_url = audio_url, thumbnail = thumbnail, uploader = uploader, duration = duration,
                 )
             except Exception as exc:
-                print(f"[MusicCog] Unexpected error during playback in guild {ctx.guild.id}: {exc}")
+                await self.bot.report_error(f"music playback in {ctx.guild.name}", exc)
                 await self._send(ctx, f"Unexpected error playing **{title}**, skipping.")
                 await self._play_next(ctx)
 
