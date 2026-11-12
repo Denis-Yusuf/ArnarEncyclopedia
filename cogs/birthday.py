@@ -12,7 +12,8 @@ from database.database import SessionLocal
 from database.models import Birthday
 
 DEFAULT_MESSAGE = "Happy Birthday %n!"
-DEFAULT_ROLE = "everyone"
+# Kept as ready-to-send mention text: "@everyone", or "<@&role_id>" for a role.
+DEFAULT_ROLE = "@everyone"
 # Without a zone the loop runs at 00:00 UTC, which is 01:00 or 02:00 for the server's members.
 TIMEZONE = ZoneInfo("Europe/Brussels")
 CHECKING_TIME = dt.time(hour=0, minute=0, tzinfo=TIMEZONE)
@@ -39,7 +40,7 @@ def _replace_placeholders(message: str, uid: int) -> str:
     :return: The message with all placeholders resolved.
     """
     message = str.replace(message, "%n", f"<@{uid}>")
-    message = str.replace(message, "%r", f"<@{DEFAULT_ROLE}>")
+    message = str.replace(message, "%r", DEFAULT_ROLE)
     return message
 
 
@@ -97,16 +98,16 @@ class BirthdaySchedulerCog(commands.Cog):
 
     @commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-default-role", description="Set the default mention role")
-    async def birthday_set_default_role(self, ctx: commands.Context, *, role: str = None) -> None:
+    async def birthday_set_default_role(self, ctx: commands.Context, *, role: discord.Role = None) -> None:
         """
         Set the default role to be mentioned in birthday messages via %r.
         Resets to 'everyone' if no role is provided.
 
         :param ctx: The invocation context.
-        :param role: The role name or ID to use as the default mention.
+        :param role: The role to use as the default mention.
         """
         global DEFAULT_ROLE
-        DEFAULT_ROLE = role or "everyone"
+        DEFAULT_ROLE = role.mention if role else "@everyone"
 
         embed = discord.Embed(
             title="Default Role Updated",
@@ -148,7 +149,7 @@ class BirthdaySchedulerCog(commands.Cog):
             )
             embed.set_thumbnail(url=user.display_avatar.url)
             embed.add_field(name="Date", value=date.strftime("%d-%m"), inline=True)
-            embed.add_field(name="Message", value=f"_{DEFAULT_MESSAGE if 'DEFAULT' else message}_", inline=False)
+            embed.add_field(name="Message", value=f"_{message if message and message != 'DEFAULT' else DEFAULT_MESSAGE}_", inline=False)
             embed.set_footer(text="Use %n as a placeholder for the user's name.\nUse %r to mention the default role.\nDEFAULT will use the default set message.")
             await ctx.send(embed=embed)
         else:
