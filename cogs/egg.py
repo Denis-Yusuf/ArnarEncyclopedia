@@ -56,3 +56,6 @@ class Eggcog(commands.Cog):
             allowed_mentions = discord.AllowedMentions(users = True),
             suppress_embeds = not is_url
         )
+        if target is not ctx:
+            # A slash command with no reply of its own shows "The application did not respond".
+            await ctx.send(f"Posted in {target.mention}")
