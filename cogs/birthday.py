@@ -38,6 +38,18 @@ def _replace_placeholders(message: str, uid: int) -> str:
     return message
 
 
+def _require_admin_for_others(ctx: commands.Context, user: discord.abc.User) -> None:
+    """
+    Members may change their own birthday; changing someone else's needs Administrator.
+
+    :param ctx: The invocation context.
+    :param user: The member whose birthday is being changed.
+    :raises commands.MissingPermissions: When a non-admin targets another member.
+    """
+    if user != ctx.author and not ctx.author.guild_permissions.administrator:
+        raise commands.MissingPermissions(["administrator"])
+
+
 class BirthdaySchedulerCog(commands.Cog):
     """Cog for managing and announcing birthdays."""
 
@@ -53,7 +65,7 @@ class BirthdaySchedulerCog(commands.Cog):
         """Stop the birthday check loop when the cog is unloaded."""
         self.check_birthdays.stop()
 
-    #@commands.has_guild_permissions(administrator=True)
+    @commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-default-message", description="Set the default birthday message")
     async def birthday_set_default_message(self, ctx: commands.Context, *, message: str = None) -> None:
         """
@@ -74,7 +86,7 @@ class BirthdaySchedulerCog(commands.Cog):
         embed.set_footer(text="Use %n as a placeholder for the user's name.\nUse %r to mention the default role.")
         await ctx.send(embed=embed)
 
-    #@commands.has_guild_permissions(administrator=True)
+    @commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-default-role", description="Set the default mention role")
     async def birthday_set_default_role(self, ctx: commands.Context, *, role: str = None) -> None:
         """
@@ -94,7 +106,6 @@ class BirthdaySchedulerCog(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    #@commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-set", description="Add or update a birthday")
     async def birthday_set(self, ctx: commands.Context, date: app_commands.Transform[dt.datetime, DateTransformer], user: discord.Member = None, *, message: str = None) -> None:
         """
@@ -107,6 +118,7 @@ class BirthdaySchedulerCog(commands.Cog):
         :param message: Optional custom birthday message. Use DEFAULT to fall back to the global message.
         """
         user = user or ctx.author
+        _require_admin_for_others(ctx, user)
         date_text = date.strftime("%d-%m")
 
         async with SessionLocal.begin() as db:
@@ -141,16 +153,16 @@ class BirthdaySchedulerCog(commands.Cog):
             embed.set_footer(text="Use %n as a placeholder for the user's name.\nUse %r to mention the default role.\nDEFAULT will use the default set message.")
             await ctx.send(embed=embed)
 
-    #@commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-remove", description="Remove a birthday")
-    async def birthday_remove(self, ctx: commands.Context, user: discord.Member) -> None:
+    async def birthday_remove(self, ctx: commands.Context, user: discord.Member = None) -> None:
         """
-        Remove a user's birthday from the saved list.
+        Remove a user's birthday from the saved list. Defaults to the command author if no user is given.
 
         :param ctx: The invocation context.
-        :param user: The member whose birthday to remove.
+        :param user: The member whose birthday to remove. Defaults to the author.
         """
         user = user or ctx.author
+        _require_admin_for_others(ctx, user)
 
         async with SessionLocal.begin() as db:
             birthday = await db.get(Birthday, user.id)
