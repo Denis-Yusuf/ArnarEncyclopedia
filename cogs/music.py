@@ -581,7 +581,8 @@ class MusicCog(commands.Cog):
 
         await self._ensure_ack(ctx)
 
-        if ctx.voice_client.is_playing():
+        # Paused counts as busy: starting a second playback on top would fight the first one over the queue.
+        if ctx.voice_client.is_playing() or ctx.voice_client.is_paused():
             # Something is already playing — only need the title to dedup and queue
             async with self._typing(ctx):
                 try:
@@ -668,7 +669,7 @@ class MusicCog(commands.Cog):
             await self._send(ctx, f'Added **{added}** song(s) from playlist to queue{cap_note}.')
 
             first_audio = None
-            if not ctx.voice_client.is_playing() and first_entry:
+            if not ctx.voice_client.is_playing() and not ctx.voice_client.is_paused() and first_entry:
                 # Pop the first entry out of the queue and fetch its audio so we can
                 # stream it immediately after the typing context closes.
                 item = queue.pop(queue.index(first_entry))
