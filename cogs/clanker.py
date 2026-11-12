@@ -16,7 +16,8 @@ class ClankerCog(commands.Cog):
         self.bot = bot
         data = _load_encyclopedia()
         self.default_quotes: list[str] = data["Default"]
-        self.ma_channel_id = int(os.getenv("MUDAI_CHANNEL_ID"))
+        # None when unset; no channel is excluded then.
+        self.ma_channel_id = int(os.getenv("MUDAI_CHANNEL_ID") or 0) or None
 
         self.enabled = True
         self.window_seconds = 10      # interval to track

@@ -57,10 +57,14 @@ class BirthdaySchedulerCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.birthday_channel = int(os.getenv("BIRTHDAY_CHANNEL_ID"))
+        self.birthday_channel = int(os.getenv("BIRTHDAY_CHANNEL_ID") or 0) or None
 
     def cog_load(self) -> None:
         """Start the birthday check loop when the cog is loaded."""
+        # Without a channel there is nowhere to announce; the commands keep working.
+        if self.birthday_channel is None:
+            print("BIRTHDAY_CHANNEL_ID is not set, birthdays will not be announced.")
+            return
         self.check_birthdays.start()
 
     def cog_unload(self) -> None:

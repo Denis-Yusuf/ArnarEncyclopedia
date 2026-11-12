@@ -23,7 +23,8 @@ class Eggcog(commands.Cog):
         :param bot: The running Discord bot instance.
         """
         self.bot = bot
-        self.ma_channel_id = int(os.getenv("MUDAI_CHANNEL_ID"))
+        # None when unset; the $ma quote then falls back to the invoking channel.
+        self.ma_channel_id = int(os.getenv("MUDAI_CHANNEL_ID") or 0) or None
         data = _load_encyclopedia()
         self.default_quotes: list[str] = data["default"]
         # Keyed by user ID string to match Discord's snowflake format
