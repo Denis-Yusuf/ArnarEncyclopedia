@@ -8,3 +8,4 @@ spotipy
 sqlalchemy[asyncio]
 yt-dlp
 regex
+tzdata

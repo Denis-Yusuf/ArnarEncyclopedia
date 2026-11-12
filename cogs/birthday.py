@@ -3,6 +3,7 @@ import discord
 import os
 import datetime as dt
 
+from zoneinfo import ZoneInfo
 from discord.ext import commands, tasks
 from discord import app_commands
 from sqlalchemy import select
@@ -12,7 +13,9 @@ from database.models import Birthday
 
 DEFAULT_MESSAGE = "Happy Birthday %n!"
 DEFAULT_ROLE = "everyone"
-CHECKING_TIME = dt.time(hour=0, minute=0)
+# Without a zone the loop runs at 00:00 UTC, which is 01:00 or 02:00 for the server's members.
+TIMEZONE = ZoneInfo("Europe/Brussels")
+CHECKING_TIME = dt.time(hour=0, minute=0, tzinfo=TIMEZONE)
 
 
 class DateTransformer(app_commands.Transformer):
@@ -271,7 +274,7 @@ class BirthdaySchedulerCog(commands.Cog):
         Runs at the time of day specified in CHECKING_TIME. Errors per user are caught and logged individually
         to prevent one failure from stopping the rest.
         """
-        now = dt.datetime.now()
+        now = dt.datetime.now(TIMEZONE)
         dates = [now.strftime("%d-%m")]
         # Leap-day birthdays are announced on 28-02 in years that have no 29-02.
         if dates[0] == "28-02" and not calendar.isleap(now.year):
