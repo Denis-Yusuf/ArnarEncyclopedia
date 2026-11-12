@@ -732,7 +732,8 @@ class MusicCog(commands.Cog):
         if not queue:
             await self._send(ctx, "The queue is empty.")
             return
-        lines = [f"`{position + 1}.` {item['title']}" for position, item in enumerate(queue)]
+        # Only the first 25: the dropdown holds 25, and the full list can exceed Discord's 2000 characters.
+        lines = [f"`{position + 1}.` {item['title'][:70]}" for position, item in enumerate(queue[:25])]
         suffix = f"\n*Showing first 25 of {len(queue)} songs.*" if len(queue) > 25 else ""
         await self._send(ctx, "**Queue:**\n" + "\n".join(lines) + suffix, view = QueueView(self, ctx))
 
