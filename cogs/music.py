@@ -846,7 +846,8 @@ class MusicCog(commands.Cog):
         """
         if ctx.interaction is None:
             await ctx.message.delete()
-        if ctx.voice_client and ctx.voice_client.is_playing():
+        # Same check as the Skip button: a paused song can be skipped too.
+        if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
             ctx.voice_client.stop()
             await self._send(ctx, "Skipped.")
         else:
