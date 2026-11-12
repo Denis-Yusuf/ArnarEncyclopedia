@@ -314,13 +314,18 @@ class GambaCog(commands.Cog):
             await ctx.send(msg)
 
     @commands.hybrid_command(
-        name="query", description="Search for an item in the Database."
+        name="search", description="Search for an item in the Database."
     )
-    async def query(self, ctx: commands.Context, *, query: str) -> None:
+    async def search(self, ctx: commands.Context, *, query: str) -> None:
         """
         Search for an item given a query, using fts5.
         """
-        q = " AND ".join(f"{t}*" for t in query.strip().split())
+        # Quote every word so fts5 reads characters like . : - as text, not as query syntax.
+        q = " AND ".join('"' + t.replace('"', '""') + '"*' for t in query.split())
+        if not q:
+            await ctx.send(f'No item found for "{query}".', ephemeral=True)
+            return
+
         async with get_db() as db:
             # Declare the FTS table as a lightweight construct
             items_fts = table(
@@ -336,7 +341,11 @@ class GambaCog(commands.Cog):
                 .order_by(items_fts.c.rank)
                 .limit(1)
             )
-            result = ItemSchema.model_validate(await db.scalar(stmt, {"q": q}))
+            item = await db.scalar(stmt)
+            if item is None:
+                await ctx.send(f'No item found for "{query}".', ephemeral=True)
+                return
+            result = ItemSchema.model_validate(item)
 
         embed = discord.Embed(
             color=self.rarity_colors[result.rarity],
