@@ -206,21 +206,22 @@ class BirthdaySchedulerCog(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        embed = discord.Embed(
-            title="🎂 Birthday calendar",
-            color=discord.Color.blurple()
-        )
+        lines = []
         for birthday in birthdays:
-            user = await ctx.guild.fetch_member(birthday.user_id)
+            # get_member returns None for someone who left; fetch_member would raise and break the whole list.
+            user = ctx.guild.get_member(birthday.user_id)
             name = user.display_name if user else f"Unknown ({birthday.user_id})"
             date = birthday.date
             message = birthday.message if birthday.message != "DEFAULT" else DEFAULT_MESSAGE
-            embed.add_field(
-                name=f"{name} — {date}",
-                value=f"_{message}_",
-                inline=False
-            )
+            lines.append(f"**{name} — {date}**\n_{message}_")
 
+        # One text block, not a field per birthday: an embed holds at most 25 fields.
+        # shortcut: cut at Discord's 4096-character limit, add pages once the list no longer fits.
+        embed = discord.Embed(
+            title="🎂 Birthday calendar",
+            description="\n".join(lines)[:4096],
+            color=discord.Color.blurple()
+        )
         embed.set_footer(text=f"{len(birthdays)} birthday(s) saved")
         await ctx.send(embed=embed)
 
