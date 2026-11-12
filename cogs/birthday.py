@@ -1,3 +1,4 @@
+import calendar
 import discord
 import os
 import datetime as dt
@@ -18,7 +19,8 @@ class DateTransformer(app_commands.Transformer):
     """Transforms a string in DD-MM format into a datetime object."""
 
     async def transform(self, interaction: discord.Interaction, value: str) -> dt.datetime:
-        return dt.datetime.strptime(value, "%d-%m")
+        # Without a year strptime assumes 1900, which has no 29 February; 2000 is a leap year.
+        return dt.datetime.strptime(f"{value}-2000", "%d-%m-%Y")
 
 
 def _replace_placeholders(message: str, uid: int) -> str:
@@ -264,7 +266,11 @@ class BirthdaySchedulerCog(commands.Cog):
         Runs at the time of day specified in CHECKING_TIME. Errors per user are caught and logged individually
         to prevent one failure from stopping the rest.
         """
-        today = dt.datetime.now().strftime("%d-%m")
+        now = dt.datetime.now()
+        dates = [now.strftime("%d-%m")]
+        # Leap-day birthdays are announced on 28-02 in years that have no 29-02.
+        if dates[0] == "28-02" and not calendar.isleap(now.year):
+            dates.append("29-02")
         channel = self.bot.get_channel(self.birthday_channel)
 
         # An error that escapes a tasks.loop stops it for good, so report and skip today instead of raising.
@@ -276,7 +282,7 @@ class BirthdaySchedulerCog(commands.Cog):
 
         try:
             async with SessionLocal() as db:
-                birthdays = (await db.scalars(select(Birthday).where(Birthday.date == today))).all()
+                birthdays = (await db.scalars(select(Birthday).where(Birthday.date.in_(dates)))).all()
         except Exception as e:
             await self.bot.report_error("birthday check", e)
             return
