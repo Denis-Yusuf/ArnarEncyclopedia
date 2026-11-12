@@ -1,0 +1,11 @@
+# Secrets reach the container through docker-compose's environment block, not the image
+.env
+.env.*
+.venv/
+.git/
+__pycache__/
+*.db
+birthdays.json
+.idea/
+.vscode/
+.claude/
