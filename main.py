@@ -117,9 +117,14 @@ async def main() -> None:
         await bot.start(os.getenv("TOKEN"))
 
 
+exit_code = 0
 try:
     asyncio.run(main())
 except KeyboardInterrupt:
     pass
+except Exception:  # pylint: disable=broad-exception-caught
+    # os._exit skips Python's own crash report, so print it here or the error is lost.
+    traceback.print_exc()
+    exit_code = 1
 finally:
-    os._exit(0)
+    os._exit(exit_code)
