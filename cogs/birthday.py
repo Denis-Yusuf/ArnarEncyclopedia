@@ -33,7 +33,12 @@ class DateTransformer(app_commands.Transformer):
 
     async def transform(self, interaction: discord.Interaction, value: str) -> dt.datetime:
         # Without a year strptime assumes 1900, which has no 29 February; 2000 is a leap year.
-        return dt.datetime.strptime(f"{value}-2000", "%d-%m-%Y")
+        try:
+            return dt.datetime.strptime(f"{value}-2000", "%d-%m-%Y")
+        except ValueError as e:
+            # A typo is the member's mistake, not a bot error: answer with the format, keep it out of the modlog.
+            # Only the start of the input is echoed: a slash option can be longer than an embed may be.
+            raise commands.BadArgument(f'"{value[:20]}" is not a date. Use DD-MM, for example 29-02.') from e
 
 
 async def _get_setting(db: AsyncSession, key: str, default: str | None) -> str | None:

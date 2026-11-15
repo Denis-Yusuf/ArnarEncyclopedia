@@ -116,6 +116,9 @@ class SaltBot(commands.Bot):
             description = f"Missing argument: `{error.param.name}`"
         elif isinstance(error, commands.MissingPermissions):
             description = "You don't have permissions to use that command."
+        elif isinstance(error, commands.BadArgument):
+            # Input the user got wrong (a bad date, an unknown member): the message says what to change.
+            description = str(error)
         else:
             await self.report_error(f"command {ctx.command}", error)
             description = f"An unexpected error ocurred.\n```{error}```"
