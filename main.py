@@ -123,29 +123,6 @@ class SaltBot(commands.Bot):
         embed = discord.Embed(title = "❌ Error", description = description, color = discord.Color.red())
         await ctx.send(embed = embed, ephemeral = True)
 
-    async def on_app_command_error(
-            self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
-    ) -> None:
-        """
-        Handles errors raised by slash commands.
-        Uses followup if the interaction was already acknowledged, otherwise responds directly.
-
-        :param interaction: The interaction that triggered the failed command.
-        :param error: The error that was raised.
-        """
-        if isinstance(error, discord.app_commands.MissingPermissions):
-            description = "You don't have permissions to use that command."
-        else:
-            traceback.print_exception(type(error), error, error.__traceback__)
-            description = f"An unexpected error ocurred.\n```{error}```"
-
-        embed = discord.Embed(title = "❌ Error", description = description, color = discord.Color.red())
-
-        if interaction.response.is_done():
-            await interaction.followup.send(embed = embed, ephemeral = True)
-        else:
-            await interaction.response.send_message(embed = embed, ephemeral = True)
-
 async def main() -> None:
     discord.utils.setup_logging()
     intents = discord.Intents.default()
