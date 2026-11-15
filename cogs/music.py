@@ -750,6 +750,12 @@ class MusicCog(commands.Cog):
         :param ctx: Used to access voice state and send messages.
         :param entries: (yt-dlp query, title) tuples, in playlist order.
         """
+        # Stop or a disconnect while the list was loading: queueing now would leave songs behind with nothing to play them.
+        # The reply also answers the slash command, which the typing indicator already deferred.
+        if not ctx.voice_client:
+            await self._send(ctx, "Playback was stopped before the playlist finished loading.")
+            return
+
         if not entries:
             await self._send(ctx, "The playlist appears to be empty or unavailable.")
             return
