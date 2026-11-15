@@ -17,6 +17,8 @@ DEFAULT_ROLE = "@everyone"
 # Without a zone the loop runs at 00:00 UTC, which is 01:00 or 02:00 for the server's members.
 TIMEZONE = ZoneInfo("Europe/Brussels")
 CHECKING_TIME = dt.time(hour=0, minute=0, tzinfo=TIMEZONE)
+# Discord's limit for an embed description.
+EMBED_DESCRIPTION_LIMIT = 4096
 
 
 class DateTransformer(app_commands.Transformer):
@@ -221,17 +223,28 @@ class BirthdaySchedulerCog(commands.Cog):
             name = user.display_name if user else f"Unknown ({birthday.user_id})"
             date = birthday.date
             message = birthday.message if birthday.message != "DEFAULT" else DEFAULT_MESSAGE
-            lines.append(f"**{name} — {date}**\n_{message}_")
+            # Cut one oversized entry so it still fits in an embed by itself.
+            lines.append(f"**{name} — {date}**\n_{message}_"[:EMBED_DESCRIPTION_LIMIT])
 
         # One text block, not a field per birthday: an embed holds at most 25 fields.
-        # shortcut: cut at Discord's 4096-character limit, add pages once the list no longer fits.
-        embed = discord.Embed(
-            title="🎂 Birthday calendar",
-            description="\n".join(lines)[:4096],
-            color=discord.Color.blurple()
-        )
-        embed.set_footer(text=f"{len(birthdays)} birthday(s) saved")
-        await ctx.send(embed=embed)
+        # Whole entries are packed into pages, so no entry is split across two embeds.
+        pages = []
+        for line in lines:
+            if pages and len(pages[-1]) + 1 + len(line) <= EMBED_DESCRIPTION_LIMIT:
+                pages[-1] += "\n" + line
+            else:
+                pages.append(line)
+
+        # One message per page: the embeds of a single message share a 6000-character limit.
+        for number, page in enumerate(pages, start=1):
+            embed = discord.Embed(
+                title="🎂 Birthday calendar" if number == 1 else None,
+                description=page,
+                color=discord.Color.blurple()
+            )
+            if number == len(pages):
+                embed.set_footer(text=f"{len(birthdays)} birthday(s) saved")
+            await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="birthday-get", description="Show the birthday of a specific user")
     async def birthday_get(self, ctx: commands.Context, user: discord.Member = None) -> None:
