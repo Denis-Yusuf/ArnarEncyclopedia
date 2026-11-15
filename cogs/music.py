@@ -757,7 +757,8 @@ class MusicCog(commands.Cog):
         if self.youtube.is_playlist_url(query):
             await self._enqueue_playlist(ctx, query)
         elif 'spotify.com' in query:
-            search_query = self.spotify.resolve_query(query)
+            # resolve_query does blocking HTTP; a thread keeps the event loop free for other commands.
+            search_query = await asyncio.to_thread(self.spotify.resolve_query, query)
             if not search_query:
                 await self._send(ctx, "No results found on Spotify.")
                 return
