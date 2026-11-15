@@ -2,6 +2,8 @@ import asyncio
 import random
 
 import discord
+import requests
+import spotipy
 import yt_dlp
 from discord.ext import commands
 
@@ -100,6 +102,9 @@ class NowPlayingView(discord.ui.View):
 
 
 PLAYLIST_CAP = 50
+# Everything a Spotify lookup can raise: API and auth errors from spotipy, network errors from
+# requests underneath it (a spotipy dependency, so always installed).
+SPOTIFY_ERRORS = (spotipy.SpotifyBaseException, requests.RequestException)
 
 
 class QueueSelect(discord.ui.Select):
@@ -684,12 +689,8 @@ class MusicCog(commands.Cog):
         :param ctx: Used to access voice state and send messages.
         :param url: A YouTube playlist or video-in-playlist URL.
         """
-        if not ctx.author.voice:
-            await self._send(ctx, "You must be in a voice channel.")
+        if not await self._prepare_voice(ctx):
             return
-
-        await self._join_voice(ctx)
-        await self._ensure_ack(ctx)
 
         async with self._typing(ctx):
             try:
@@ -701,26 +702,74 @@ class MusicCog(commands.Cog):
                 await self._send(ctx, "Could not load that playlist.")
                 return
 
-            if not entries:
-                await self._send(ctx, "The playlist appears to be empty or unavailable.")
+        await self._enqueue_entries(ctx, entries)
+
+    async def _enqueue_spotify_collection(self, ctx: commands.Context, url: str) -> None:
+        """
+        Fetches the songs of a Spotify album or playlist link, bulk-adds them to the queue,
+        and kicks off playback if nothing is currently playing.
+
+        :param ctx: Used to access voice state and send messages.
+        :param url: A Spotify album or playlist URL.
+        """
+        if not await self._prepare_voice(ctx):
+            return
+
+        async with self._typing(ctx):
+            try:
+                # fetch_collection does blocking HTTP; a thread keeps the event loop free.
+                entries = await asyncio.to_thread(self.spotify.fetch_collection, url)
+            except SPOTIFY_ERRORS:
+                await self._send(ctx, "Could not load that Spotify link.")
                 return
 
-            capped = len(entries) > PLAYLIST_CAP
-            entries = entries[:PLAYLIST_CAP]
-            queue = self.get_queue(ctx.guild.id)
-            added = 0
-            # Track the first newly added entry so we can pop and play it immediately
-            # if nothing is currently running, without replaying something mid-queue.
-            first_entry = None
-            for webpage_url, title in entries:
-                if not self._is_queued(ctx.guild.id, title):
-                    queue.append({"query": webpage_url, "title": title})
-                    added += 1
-                    if first_entry is None:
-                        first_entry = queue[-1]
+        if entries is None:
+            await self._send(ctx, "That Spotify link is not supported.")
+            return
+        await self._enqueue_entries(ctx, entries)
 
-            cap_note = f" *(capped at {PLAYLIST_CAP})*" if capped else ""
-            await self._send(ctx, f'Added **{added}** song(s) from playlist to queue{cap_note}.')
+    async def _prepare_voice(self, ctx: commands.Context) -> bool:
+        """
+        Joins the author's voice channel and acknowledges the command before a slow fetch.
+
+        :param ctx: Used to access voice state and send messages.
+        :return: False when the author is not in a voice channel (they have been told so).
+        """
+        if not ctx.author.voice:
+            await self._send(ctx, "You must be in a voice channel.")
+            return False
+
+        await self._join_voice(ctx)
+        await self._ensure_ack(ctx)
+        return True
+
+    async def _enqueue_entries(self, ctx: commands.Context, entries: list[tuple[str, str]]) -> None:
+        """
+        Bulk-adds playlist entries to the queue and kicks off playback if nothing is currently playing.
+
+        :param ctx: Used to access voice state and send messages.
+        :param entries: (yt-dlp query, title) tuples, in playlist order.
+        """
+        if not entries:
+            await self._send(ctx, "The playlist appears to be empty or unavailable.")
+            return
+
+        capped = len(entries) > PLAYLIST_CAP
+        entries = entries[:PLAYLIST_CAP]
+        queue = self.get_queue(ctx.guild.id)
+        added = 0
+        # Track the first newly added entry so we can pop and play it immediately
+        # if nothing is currently running, without replaying something mid-queue.
+        first_entry = None
+        for query, title in entries:
+            if not self._is_queued(ctx.guild.id, title):
+                queue.append({"query": query, "title": title})
+                added += 1
+                if first_entry is None:
+                    first_entry = queue[-1]
+
+        cap_note = f" *(capped at {PLAYLIST_CAP})*" if capped else ""
+        await self._send(ctx, f'Added **{added}** song(s) from playlist to queue{cap_note}.')
 
         # A running player will reach the new songs by itself.
         if ctx.guild.id in self._players or first_entry not in queue:
@@ -746,24 +795,35 @@ class MusicCog(commands.Cog):
         """
         Universal play command. Routing priority:
         1. YouTube playlist URL (contains 'list=') → _enqueue_playlist
-        2. Spotify track URL (contains 'spotify.com') → resolve via Spotify, then search YouTube
-        3. Everything else → YouTube URL or search via _play_in_voice
+        2. Spotify album or playlist URL → _enqueue_spotify_collection
+        3. Spotify track URL → resolve via Spotify, then search YouTube
+        4. Everything else → YouTube URL or search via _play_in_voice
 
         :param ctx: The invocation context.
-        :param query: A YouTube URL, playlist URL, Spotify track URL, or plain-text search string.
+        :param query: A YouTube URL, playlist URL, Spotify URL, or plain-text search string.
         """
         if ctx.interaction is None:
             await ctx.message.delete()
         if self.youtube.is_playlist_url(query):
             await self._enqueue_playlist(ctx, query)
         elif 'spotify.com' in query:
-            # resolve_query does blocking HTTP; a thread keeps the event loop free for other commands.
-            search_query = await asyncio.to_thread(self.spotify.resolve_query, query)
-            if not search_query:
-                await self._send(ctx, "No results found on Spotify.")
-                return
-            await self._send(ctx, f'Found: **{search_query}** — searching YouTube...')
-            await self._play_in_voice(ctx, f'ytsearch:{search_query}')
+            if '/album/' in query or '/playlist/' in query:
+                await self._enqueue_spotify_collection(ctx, query)
+            elif '/track/' in query:
+                try:
+                    # resolve_query does blocking HTTP; a thread keeps the event loop free for other commands.
+                    search_query = await asyncio.to_thread(self.spotify.resolve_query, query)
+                except SPOTIFY_ERRORS:
+                    await self._send(ctx, "Could not load that Spotify link.")
+                    return
+                if not search_query:
+                    await self._send(ctx, "No results found on Spotify.")
+                    return
+                await self._send(ctx, f'Found: **{search_query}** — searching YouTube...')
+                await self._play_in_voice(ctx, f'ytsearch:{search_query}')
+            else:
+                # Artist, show and episode links have no single song list to queue.
+                await self._send(ctx, "That Spotify link is not supported.")
         else:
             await self._play_in_voice(ctx, self.youtube.build_query(query))
 

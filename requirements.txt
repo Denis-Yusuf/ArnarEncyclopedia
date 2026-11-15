@@ -3,6 +3,7 @@ alembic==1.19.1
 discord.py[voice]==2.7.1
 pydantic==2.13.5
 python-dotenv==1.2.3
+requests==2.34.2
 spotipy==2.26.0
 sqlalchemy[asyncio]==2.0.52
 # Not pinned on purpose: yt-dlp must follow YouTube's changes, tzdata must follow time-zone rule changes.
