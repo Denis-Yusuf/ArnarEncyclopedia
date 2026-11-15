@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import random
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import defaultdict, Tuple
 
@@ -18,27 +17,11 @@ from database.models import Banner, BannerItem, Inventory, Item, ItemRarity, Use
 from database.schemas import ItemSchema
 
 
-@asynccontextmanager
-async def get_db() -> AsyncSession:
-    """
-    Returns an Async session context.
-    """
-    db: AsyncSession = SessionLocal()
-    try:
-        yield db
-        await db.commit()
-    except:
-        await db.rollback()
-        raise
-    finally:
-        await db.close()
-
-
 async def create_fts():
     """
     Create virtual items table for indexing.
     """
-    async with get_db() as db:
+    async with SessionLocal.begin() as db:
         await db.execute(
             text(
                 """
@@ -167,7 +150,7 @@ class GambaCog(commands.Cog):
         # Create virtual items table
         await create_fts()
 
-        async with get_db() as db:
+        async with SessionLocal.begin() as db:
             # Import default items if table is empty
             stmt = select(exists().select_from(Item))
             if not await db.scalar(stmt):
@@ -206,7 +189,7 @@ class GambaCog(commands.Cog):
         """
         Does a single pull and returns an embed.
         """
-        async with get_db() as db:
+        async with SessionLocal.begin() as db:
             await get_or_create_user(db, user_id)
             # no banner support yet
             rarity = random.choices(
@@ -279,7 +262,7 @@ class GambaCog(commands.Cog):
         :param member: An optional Discord user to see its inventory instead.
         """
         user_id = ctx.author.id if member is None else member.id
-        async with get_db() as db:
+        async with SessionLocal.begin() as db:
             user = await get_or_create_user(db, user_id)
             stmt = (
                 select(Item.rarity, func.count())
@@ -326,7 +309,7 @@ class GambaCog(commands.Cog):
             await ctx.send(f'No item found for "{query}".', ephemeral=True)
             return
 
-        async with get_db() as db:
+        async with SessionLocal.begin() as db:
             # Declare the FTS table as a lightweight construct
             items_fts = table(
                 "items_fts",
