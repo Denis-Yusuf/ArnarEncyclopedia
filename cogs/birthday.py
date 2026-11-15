@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from discord.ext import commands, tasks
 from discord import app_commands
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.database import SessionLocal
@@ -56,7 +57,9 @@ async def _set_setting(db: AsyncSession, key: str, value: str) -> None:
     :param key: Name of the setting.
     :param value: The value to store.
     """
-    await db.merge(Setting(key=key, value=value))
+    # One upsert statement: a read followed by an insert fails when two writers store a new key at once.
+    statement = insert(Setting).values(key=key, value=value)
+    await db.execute(statement.on_conflict_do_update(index_elements=["key"], set_={"value": statement.excluded.value}))
 
 
 def _replace_placeholders(message: str, uid: int, role: str) -> str:
