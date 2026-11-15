@@ -1,6 +1,6 @@
 from discord.ext import commands
 from discord import Embed
-import regex as re
+import re
 
 
 class  BlacklistCog(commands.Cog):

@@ -5,7 +5,6 @@ pydantic==2.13.5
 python-dotenv==1.2.3
 spotipy==2.26.0
 sqlalchemy[asyncio]==2.0.52
-regex==2026.7.19
 # Not pinned on purpose: yt-dlp must follow YouTube's changes, tzdata must follow time-zone rule changes.
 yt-dlp
 tzdata
