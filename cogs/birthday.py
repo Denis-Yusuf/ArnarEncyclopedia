@@ -80,6 +80,25 @@ def _replace_placeholders(message: str, uid: int, role: str) -> str:
     return message
 
 
+def _custom_message_mentions(message: str, role: str) -> discord.AllowedMentions:
+    """
+    Decide what a member-written birthday message may ping.
+    Any member can write one for their own birthday, so typing "@everyone" or a role mention
+    must not ping; only the %r placeholder reaches the default role an admin chose.
+
+    :param message: The custom message, before its placeholders are replaced.
+    :param role: Mention text of the default role: "@everyone" or "<@&role_id>".
+    :return: The mentions Discord is allowed to turn into pings.
+    """
+    uses_role = "%r" in message
+    role_id = role.strip("<@&>")
+    return discord.AllowedMentions(
+        everyone=uses_role and role == "@everyone",
+        users=True,
+        roles=[discord.Object(int(role_id))] if uses_role and role_id.isdigit() else False,
+    )
+
+
 def _require_admin_for_others(ctx: commands.Context, user: discord.abc.User) -> None:
     """
     Members may change their own birthday; changing someone else's needs Administrator.
@@ -366,9 +385,13 @@ class BirthdaySchedulerCog(commands.Cog):
                     raise commands.UserNotFound("User not found.")
 
                 if message == "DEFAULT":
+                    # Only admins can write the default message, so it may ping whatever it names.
                     message = default_message
+                    allowed_mentions = discord.AllowedMentions.all()
+                else:
+                    allowed_mentions = _custom_message_mentions(message, default_role)
                 message = _replace_placeholders(message, uid, default_role)
-                await channel.send(message)
+                await channel.send(message, allowed_mentions=allowed_mentions)
             except Exception as e:
                 await self.bot.report_error(f"birthday of user {uid}", e)
 
