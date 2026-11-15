@@ -74,6 +74,14 @@ class Birthday(Base):
     message: Mapped[str] = mapped_column()  # "DEFAULT" means the default message
 
 
+class Setting(Base):
+    """Values the bot must remember across restarts, as key/value text"""
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    value: Mapped[str] = mapped_column()
+
+
 class Item(Base):
     """All items in gacha"""
     __tablename__ = "items"
