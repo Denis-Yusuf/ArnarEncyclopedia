@@ -18,7 +18,8 @@ class  BlacklistCog(commands.Cog):
         if message.author == self.bot.user:
             return
         # search, not match: match only looks at the start of the message.
-        if bool(re.search("[Ll]\\s*[uU]\\s*[Cc]\\s*[yY]", message.content)):
+        # Word boundaries stop \s* from joining word endings, as in "will u cya".
+        if bool(re.search("\\b[Ll]\\s*[uU]\\s*[Cc]\\s*[yY]\\b", message.content)):
             channel = self.bot.get_channel(self._modlog_channel_id) if self._modlog_channel_id else None
             embed = Embed(
                 title = "Message Deleted",
