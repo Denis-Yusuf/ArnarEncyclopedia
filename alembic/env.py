@@ -32,6 +32,15 @@ def render_item(type_, obj, autogen_context):
     return False
 
 
+def include_name(name, type_, parent_names):
+    """Hide the fts5 search tables from autogenerate.
+
+    The bot creates them at startup (cogs/gamba.py), not through a migration,
+    so autogenerate would otherwise propose dropping them.
+    """
+    return not (type_ == "table" and name.startswith("items_fts"))
+
+
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 
@@ -75,6 +84,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         render_item=render_item,
+        include_name=include_name,
     )
 
     with context.begin_transaction():
@@ -83,7 +93,10 @@ def run_migrations_offline() -> None:
 
 def do_run_migrations(connection: Connection) -> None:
     context.configure(
-        connection=connection, target_metadata=target_metadata, render_item=render_item
+        connection=connection,
+        target_metadata=target_metadata,
+        render_item=render_item,
+        include_name=include_name,
     )
 
     with context.begin_transaction():

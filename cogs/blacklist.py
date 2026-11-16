@@ -1,6 +1,6 @@
 from discord.ext import commands
 from discord import Embed
-import regex as re
+import re
 
 
 class  BlacklistCog(commands.Cog):
@@ -17,12 +17,15 @@ class  BlacklistCog(commands.Cog):
         """
         if message.author == self.bot.user:
             return
-        if bool(re.match("[Ll]\\s*[uU]\\s*[Cc]\\s*[yY]", message.content)):
-            channel = self.bot.get_channel(self._modlog_channel_id)
+        # search, not match: match only looks at the start of the message.
+        # Word boundaries stop \s* from joining word endings, as in "will u cya".
+        if bool(re.search("\\b[Ll]\\s*[uU]\\s*[Cc]\\s*[yY]\\b", message.content)):
+            channel = self.bot.get_channel(self._modlog_channel_id) if self._modlog_channel_id else None
             embed = Embed(
                 title = "Message Deleted",
                 description = f"**Offender**: <@{message.author.id}>\n**Reason**: Think about it for a bit, dawg.\n **Responsible Moderator**: The Goat Himself, Me",
             )
             await message.delete()
-            await channel.send(embed = embed)
+            if channel is not None:
+                await channel.send(embed = embed)
 

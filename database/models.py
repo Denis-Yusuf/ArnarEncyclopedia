@@ -64,6 +64,24 @@ class User(Base):
     )
 
 
+class Birthday(Base):
+    """Birthdays of discord users"""
+    __tablename__ = "birthdays"
+
+    # No foreign key to users: that table is the gacha wallet, a birthday needs no wallet row.
+    user_id: Mapped[int] = mapped_column(primary_key=True)
+    date: Mapped[str] = mapped_column()  # DD-MM
+    message: Mapped[str] = mapped_column()  # "DEFAULT" means the default message
+
+
+class Setting(Base):
+    """Values the bot must remember across restarts, as key/value text"""
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    value: Mapped[str] = mapped_column()
+
+
 class Item(Base):
     """All items in gacha"""
     __tablename__ = "items"

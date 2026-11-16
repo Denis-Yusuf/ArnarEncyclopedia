@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import traceback
 
 import discord
@@ -22,6 +23,43 @@ from services.youtube import YouTubeService
 class SaltBot(commands.Bot):
     """The bot. Wires up services and cogs on startup."""
 
+    modlog_channel_id: int | None = None
+
+    async def report_error(self, where: str, error: BaseException | str) -> None:
+        """
+        Prints an error to the log and also posts it in the modlog channel,
+        so problems are visible from Discord without reading the container log.
+        Never raises: a failure to report must not cause a second error.
+
+        :param where: Short description of what was running, e.g. 'birthday check'.
+        :param error: The exception that was raised, or a plain message.
+        """
+        if isinstance(error, BaseException):
+            traceback.print_exception(type(error), error, error.__traceback__)
+        else:
+            print(f"[{where}] {error}")
+
+        channel = self.get_channel(self.modlog_channel_id) if self.modlog_channel_id else None
+        if channel is None:
+            return
+        try:
+            # 4096 is Discord's limit for an embed description; leave room for the code fence.
+            embed = discord.Embed(
+                title = f"❌ Error in {where}", description = f"```{str(error)[:4000]}```", color = discord.Color.red()
+            )
+            await channel.send(embed = embed)
+        except Exception as send_error:  # pylint: disable=broad-exception-caught
+            # Broad on purpose: a network failure or a channel that can't take messages must not escape.
+            print(f"Could not post the error to the modlog channel: {send_error}")
+
+    async def on_error(self, event_method: str, /, *args, **kwargs) -> None:
+        """
+        Handles errors raised inside event listeners (on_message, on_member_join, ...).
+
+        :param event_method: Name of the event whose listener failed.
+        """
+        await self.report_error(f"event {event_method}", sys.exception() or "unknown error")
+
     async def setup_hook(self) -> None:
         """
         Instantiates shared services and registers all cogs.
@@ -35,6 +73,7 @@ class SaltBot(commands.Bot):
         )
         music_channel_id = int(os.getenv("MUSIC_CHANNEL_ID") or 0) or None
         modlog_channel_id = int(os.getenv("MODLOG_CHANNEL_ID") or 0) or None
+        self.modlog_channel_id = modlog_channel_id
         await self.add_cog(MusicCog(self, youtube, spotify, music_channel_id))
         await self.add_cog(Eggcog(self))
         await self.add_cog(PresenceCog(self))
@@ -77,35 +116,15 @@ class SaltBot(commands.Bot):
             description = f"Missing argument: `{error.param.name}`"
         elif isinstance(error, commands.MissingPermissions):
             description = "You don't have permissions to use that command."
+        elif isinstance(error, commands.BadArgument):
+            # Input the user got wrong (a bad date, an unknown member): the message says what to change.
+            description = str(error)
         else:
-            traceback.print_exception(type(error), error, error.__traceback__)
+            await self.report_error(f"command {ctx.command}", error)
             description = f"An unexpected error ocurred.\n```{error}```"
 
         embed = discord.Embed(title = "❌ Error", description = description, color = discord.Color.red())
         await ctx.send(embed = embed, ephemeral = True)
-
-    async def on_app_command_error(
-            self, interaction: discord.Interaction, error: discord.app_commands.AppCommandError
-    ) -> None:
-        """
-        Handles errors raised by slash commands.
-        Uses followup if the interaction was already acknowledged, otherwise responds directly.
-
-        :param interaction: The interaction that triggered the failed command.
-        :param error: The error that was raised.
-        """
-        if isinstance(error, discord.app_commands.MissingPermissions):
-            description = "You don't have permissions to use that command."
-        else:
-            traceback.print_exception(type(error), error, error.__traceback__)
-            description = f"An unexpected error ocurred.\n```{error}```"
-
-        embed = discord.Embed(title = "❌ Error", description = description, color = discord.Color.red())
-
-        if interaction.response.is_done():
-            await interaction.followup.send(embed = embed, ephemeral = True)
-        else:
-            await interaction.response.send_message(embed = embed, ephemeral = True)
 
 async def main() -> None:
     discord.utils.setup_logging()
@@ -117,9 +136,14 @@ async def main() -> None:
         await bot.start(os.getenv("TOKEN"))
 
 
+exit_code = 0
 try:
     asyncio.run(main())
 except KeyboardInterrupt:
     pass
+except Exception:  # pylint: disable=broad-exception-caught
+    # os._exit skips Python's own crash report, so print it here or the error is lost.
+    traceback.print_exc()
+    exit_code = 1
 finally:
-    os._exit(0)
+    os._exit(exit_code)

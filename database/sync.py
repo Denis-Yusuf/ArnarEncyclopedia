@@ -1,34 +1,32 @@
-import os
+import csv
 
-import polars as pl
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert
 
 from database.models import Banner, BannerItem, Item, ItemRarity
 
 
-async def import_items(filename):
+async def import_items(session, filename):
     """
     Import items from csv. Items will be appended to the table. Make sure no ids overlap.
     (Leave it out or something)
+
+    :param session: Async database session; the caller commits.
+    :param filename: Path to the csv file, with the columns of the items table as header.
     """
-    uri = os.getenv("DATABASE_URL")
-    uri = uri.replace("+aiosqlite", "")
-
-    df = pl.read_csv(filename)
-    df.write_database(table_name="items", connection=uri, engine="adbc", if_table_exists="append")
-
-
-async def export_items(filename):
-    """
-    Export items to csv. It is very important that (one of) the first rows contains a non-null value
-    in nullable columns. Otherwise, it will fail, as ADBC will infer the column as INT64.
-    """
-    uri = os.getenv("DATABASE_URL")
-    uri = uri.replace("+aiosqlite", "")
-
-    df = pl.read_database_uri("SELECT * FROM items", uri, engine="adbc")
-    df.write_csv(filename)
+    with open(filename, newline="", encoding="utf-8") as f:
+        rows = [
+            {
+                # csv has no NULL: an empty cell means the value is missing.
+                **{column: value or None for column, value in row.items()},
+                "id": int(row["id"]),
+                "mal_id": int(row["mal_id"]) if row["mal_id"] else None,
+                "rarity": int(row["rarity"]),
+                "active": row["active"] == "1",
+            }
+            for row in csv.DictReader(f)
+        ]
+    await session.execute(insert(Item), rows)
 
 
 async def sync_banners(session, data):

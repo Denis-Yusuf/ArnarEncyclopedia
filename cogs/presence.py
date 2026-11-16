@@ -1,5 +1,6 @@
 import itertools
 import json
+import logging
 import random
 from datetime import datetime, timezone
 
@@ -23,14 +24,24 @@ _ACTIVITY_BUILDERS = {
 def _load_entries(path: str = "activities.json") -> list:
     """
     Load and shuffle raw activity entries from a JSON file.
+    Entries that cannot be turned into an activity (unknown type, missing field) are left out.
 
     :param path: Path to the JSON activities file.
     :return: Shuffled list of raw entry dicts.
     """
     with open(path, encoding="utf-8") as f:
         entries = json.load(f)
-    random.shuffle(entries)
-    return entries
+    usable = []
+    for entry in entries:
+        try:
+            # The cycle repeats forever, so a broken entry would fail again on every round: drop it now.
+            _ACTIVITY_BUILDERS[entry["type"]](entry)
+        except (KeyError, TypeError):
+            logging.warning("Skipping unusable entry in %s: %r", path, entry)
+            continue
+        usable.append(entry)
+    random.shuffle(usable)
+    return usable
 
 
 class PresenceCog(commands.Cog):
@@ -51,9 +62,15 @@ class PresenceCog(commands.Cog):
     @tasks.loop(minutes=ROTATE_EVERY_MINUTES)
     async def rotate(self) -> None:
         """Advances to the next activity in the cycle and updates the bot's presence."""
-        entry = next(self._cycle)
-        activity = _ACTIVITY_BUILDERS[entry["type"]](entry)
-        await self.bot.change_presence(activity=activity)
+        entry = next(self._cycle, None)
+        if entry is None:
+            return
+        # An error that escapes a tasks.loop stops it for good, so report and try again next round.
+        try:
+            activity = _ACTIVITY_BUILDERS[entry["type"]](entry)
+            await self.bot.change_presence(activity=activity)
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            await self.bot.report_error("presence rotation", e)
 
     @rotate.before_loop
     async def before_rotate(self) -> None:

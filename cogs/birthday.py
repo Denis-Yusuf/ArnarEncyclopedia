@@ -1,58 +1,73 @@
+import calendar
 import discord
 import os
-import json
 import datetime as dt
 
-from pathlib import Path
+from zoneinfo import ZoneInfo
 from discord.ext import commands, tasks
 from discord import app_commands
+from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from database.database import SessionLocal
+from database.models import Birthday, Setting
+
+# Built-in defaults; an admin's own choice is stored in the settings table so it survives a restart.
 DEFAULT_MESSAGE = "Happy Birthday %n!"
-DEFAULT_ROLE = "everyone"
-CHECKING_TIME = dt.time(hour=0, minute=0)
+# Kept as ready-to-send mention text: "@everyone", or "<@&role_id>" for a role.
+DEFAULT_ROLE = "@everyone"
+DEFAULT_MESSAGE_KEY = "birthday_default_message"
+DEFAULT_ROLE_KEY = "birthday_default_role"
+# Date (YYYY-MM-DD) of the last day whose birthdays were announced.
+LAST_CHECK_KEY = "birthday_last_check"
+# Without a zone the loop runs at 00:00 UTC, which is 01:00 or 02:00 for the server's members.
+TIMEZONE = ZoneInfo("Europe/Brussels")
+CHECKING_TIME = dt.time(hour=0, minute=0, tzinfo=TIMEZONE)
+# Discord's limit for an embed description.
+EMBED_DESCRIPTION_LIMIT = 4096
 
 
 class DateTransformer(app_commands.Transformer):
     """Transforms a string in DD-MM format into a datetime object."""
 
     async def transform(self, interaction: discord.Interaction, value: str) -> dt.datetime:
-        return dt.datetime.strptime(value, "%d-%m")
+        # Without a year strptime assumes 1900, which has no 29 February; 2000 is a leap year.
+        try:
+            return dt.datetime.strptime(f"{value}-2000", "%d-%m-%Y")
+        except ValueError as e:
+            # A typo is the member's mistake, not a bot error: answer with the format, keep it out of the modlog.
+            # Only the start of the input is echoed: a slash option can be longer than an embed may be.
+            raise commands.BadArgument(f'"{value[:20]}" is not a date. Use DD-MM, for example 29-02.') from e
 
 
-def _load_birthdays(path: str = "birthdays.json") -> dict:
+async def _get_setting(db: AsyncSession, key: str, default: str | None) -> str | None:
     """
-    Load birthdays from a JSON file.
-    If the file doesn't exist, it creates an empty one.
+    Read a stored setting.
 
-    :param path: Path to the JSON file. Defaults to 'birthdays.json'.
-    :return: A dictionary of birthdays keyed by user ID.
+    :param db: Async database session.
+    :param key: Name of the setting.
+    :param default: Returned when the setting was never stored.
+    :return: The stored value, or the default.
     """
-    file = Path(path)
-    if file.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                pass
-
-    file.parent.mkdir(parents=True, exist_ok=True)
-    with file.open("w", encoding="utf-8") as f:
-        json.dump({}, f, indent=4)
-    return {}
+    setting = await db.get(Setting, key)
+    return setting.value if setting else default
 
 
-def _save_birthdays(data: dict, path: str = "birthdays.json") -> None:
+async def _set_setting(db: AsyncSession, key: str, value: str) -> None:
     """
-    Save the birthdays dictionary to a JSON file.
+    Store a setting, replacing any earlier value. The caller commits.
 
-    :param data: The birthdays dictionary to save.
-    :param path: Path to the JSON file. Defaults to 'birthdays.json'.
+    :param db: Async database session.
+    :param key: Name of the setting.
+    :param value: The value to store.
     """
-    with open(path, "w") as f:
-        json.dump(data, f, indent=4)
+    # One upsert statement: a read followed by an insert fails when two writers store a new key at once.
+    statement = insert(Setting).values(key=key, value=value)
+    await db.execute(statement.on_conflict_do_update(index_elements=["key"], set_={"value": statement.excluded.value}))
 
 
-def _replace_placeholders(message: str, uid: str) -> str:
+def _replace_placeholders(message: str, uid: int, role: str) -> str:
     """
     Replace placeholders in a birthday message with their actual values.
 
@@ -62,11 +77,43 @@ def _replace_placeholders(message: str, uid: str) -> str:
 
     :param message: The message string containing placeholders.
     :param uid: The Discord user ID of the birthday person.
+    :param role: Mention text of the default role.
     :return: The message with all placeholders resolved.
     """
     message = str.replace(message, "%n", f"<@{uid}>")
-    message = str.replace(message, "%r", f"<@{DEFAULT_ROLE}>")
+    message = str.replace(message, "%r", role)
     return message
+
+
+def _custom_message_mentions(message: str, role: str) -> discord.AllowedMentions:
+    """
+    Decide what a member-written birthday message may ping.
+    Any member can write one for their own birthday, so typing "@everyone" or a role mention
+    must not ping; only the %r placeholder reaches the default role an admin chose.
+
+    :param message: The custom message, before its placeholders are replaced.
+    :param role: Mention text of the default role: "@everyone" or "<@&role_id>".
+    :return: The mentions Discord is allowed to turn into pings.
+    """
+    uses_role = "%r" in message
+    role_id = role.strip("<@&>")
+    return discord.AllowedMentions(
+        everyone=uses_role and role == "@everyone",
+        users=True,
+        roles=[discord.Object(int(role_id))] if uses_role and role_id.isdigit() else False,
+    )
+
+
+def _require_admin_for_others(ctx: commands.Context, user: discord.abc.User) -> None:
+    """
+    Members may change their own birthday; changing someone else's needs Administrator.
+
+    :param ctx: The invocation context.
+    :param user: The member whose birthday is being changed.
+    :raises commands.MissingPermissions: When a non-admin targets another member.
+    """
+    if user != ctx.author and not ctx.author.guild_permissions.administrator:
+        raise commands.MissingPermissions(["administrator"])
 
 
 class BirthdaySchedulerCog(commands.Cog):
@@ -74,18 +121,21 @@ class BirthdaySchedulerCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.birthdays: dict = _load_birthdays()
-        self.birthday_channel = int(os.getenv("BIRTHDAY_CHANNEL_ID"))
+        self.birthday_channel = int(os.getenv("BIRTHDAY_CHANNEL_ID") or 0) or None
 
     def cog_load(self) -> None:
         """Start the birthday check loop when the cog is loaded."""
+        # Without a channel there is nowhere to announce; the commands keep working.
+        if self.birthday_channel is None:
+            print("BIRTHDAY_CHANNEL_ID is not set, birthdays will not be announced.")
+            return
         self.check_birthdays.start()
 
     def cog_unload(self) -> None:
         """Stop the birthday check loop when the cog is unloaded."""
         self.check_birthdays.stop()
 
-    #@commands.has_guild_permissions(administrator=True)
+    @commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-default-message", description="Set the default birthday message")
     async def birthday_set_default_message(self, ctx: commands.Context, *, message: str = None) -> None:
         """
@@ -95,38 +145,39 @@ class BirthdaySchedulerCog(commands.Cog):
         :param ctx: The invocation context.
         :param message: The new default message. Supports %n (user mention) and %r (role mention).
         """
-        global DEFAULT_MESSAGE
-        DEFAULT_MESSAGE = message or "Happy Birthday %n!"
+        message = message or DEFAULT_MESSAGE
+        async with SessionLocal.begin() as db:
+            await _set_setting(db, DEFAULT_MESSAGE_KEY, message)
 
         embed = discord.Embed(
             title="Default Birthday Message Updated",
-            description=f"The default birthday message has been set to:\n\n**{DEFAULT_MESSAGE}**",
+            description=f"The default birthday message has been set to:\n\n**{message}**",
             color=discord.Color.blurple()
         )
         embed.set_footer(text="Use %n as a placeholder for the user's name.\nUse %r to mention the default role.")
         await ctx.send(embed=embed)
 
-    #@commands.has_guild_permissions(administrator=True)
+    @commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-default-role", description="Set the default mention role")
-    async def birthday_set_default_role(self, ctx: commands.Context, *, role: str = None) -> None:
+    async def birthday_set_default_role(self, ctx: commands.Context, *, role: discord.Role = None) -> None:
         """
         Set the default role to be mentioned in birthday messages via %r.
         Resets to 'everyone' if no role is provided.
 
         :param ctx: The invocation context.
-        :param role: The role name or ID to use as the default mention.
+        :param role: The role to use as the default mention.
         """
-        global DEFAULT_ROLE
-        DEFAULT_ROLE = role or "everyone"
+        mention = role.mention if role else DEFAULT_ROLE
+        async with SessionLocal.begin() as db:
+            await _set_setting(db, DEFAULT_ROLE_KEY, mention)
 
         embed = discord.Embed(
             title="Default Role Updated",
-            description=f"The default birthday mention role has been set to:\n\n**{DEFAULT_ROLE}**",
+            description=f"The default birthday mention role has been set to:\n\n**{mention}**",
             color=discord.Color.blurple()
         )
         await ctx.send(embed=embed)
 
-    #@commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-set", description="Add or update a birthday")
     async def birthday_set(self, ctx: commands.Context, date: app_commands.Transform[dt.datetime, DateTransformer], user: discord.Member = None, *, message: str = None) -> None:
         """
@@ -139,32 +190,32 @@ class BirthdaySchedulerCog(commands.Cog):
         :param message: Optional custom birthday message. Use DEFAULT to fall back to the global message.
         """
         user = user or ctx.author
-        uid = str(user.id)
+        _require_admin_for_others(ctx, user)
+        date_text = date.strftime("%d-%m")
 
-        if self.birthdays.get(uid) is None:
-            self.birthdays[uid] = {
-                "date": date.strftime("%d-%m"),
-                "message": message or "DEFAULT",
-            }
-            _save_birthdays(self.birthdays)
+        async with SessionLocal.begin() as db:
+            default_message = await _get_setting(db, DEFAULT_MESSAGE_KEY, DEFAULT_MESSAGE)
+            birthday = await db.get(Birthday, user.id)
+            is_new = birthday is None
+            if is_new:
+                db.add(Birthday(user_id=user.id, date=date_text, message=message or "DEFAULT"))
+            else:
+                # Read here: ORM objects expire once the session commits.
+                existing_message = birthday.message
+                birthday.date = date_text
+                birthday.message = message or existing_message
 
+        if is_new:
             embed = discord.Embed(
                 title=f"🎂 {user.display_name}'s birthday saved",
                 color=discord.Color.greyple()
             )
             embed.set_thumbnail(url=user.display_avatar.url)
             embed.add_field(name="Date", value=date.strftime("%d-%m"), inline=True)
-            embed.add_field(name="Message", value=f"_{DEFAULT_MESSAGE if 'DEFAULT' else message}_", inline=False)
+            embed.add_field(name="Message", value=f"_{message if message and message != 'DEFAULT' else default_message}_", inline=False)
             embed.set_footer(text="Use %n as a placeholder for the user's name.\nUse %r to mention the default role.\nDEFAULT will use the default set message.")
             await ctx.send(embed=embed)
         else:
-            existing_message = self.birthdays.get(uid, {}).get("message")
-            self.birthdays[uid] = {
-                "date": date.strftime("%d-%m"),
-                "message": message or existing_message,
-            }
-            _save_birthdays(self.birthdays)
-
             embed = discord.Embed(
                 title=f"🎂 {user.display_name}'s birthday updated",
                 color=discord.Color.blurple()
@@ -175,22 +226,23 @@ class BirthdaySchedulerCog(commands.Cog):
             embed.set_footer(text="Use %n as a placeholder for the user's name.\nUse %r to mention the default role.\nDEFAULT will use the default set message.")
             await ctx.send(embed=embed)
 
-    #@commands.has_guild_permissions(administrator=True)
     @commands.hybrid_command(name="birthday-remove", description="Remove a birthday")
-    async def birthday_remove(self, ctx: commands.Context, user: discord.Member) -> None:
+    async def birthday_remove(self, ctx: commands.Context, user: discord.Member = None) -> None:
         """
-        Remove a user's birthday from the saved list.
+        Remove a user's birthday from the saved list. Defaults to the command author if no user is given.
 
         :param ctx: The invocation context.
-        :param user: The member whose birthday to remove.
+        :param user: The member whose birthday to remove. Defaults to the author.
         """
         user = user or ctx.author
-        uid = str(user.id)
+        _require_admin_for_others(ctx, user)
 
-        if uid in self.birthdays:
-            del self.birthdays[uid]
-            _save_birthdays(self.birthdays)
+        async with SessionLocal.begin() as db:
+            birthday = await db.get(Birthday, user.id)
+            if birthday is not None:
+                await db.delete(birthday)
 
+        if birthday is not None:
             embed = discord.Embed(
                 title=f"🗑️ {user.display_name}'s birthday removed",
                 color=discord.Color.greyple()
@@ -214,7 +266,11 @@ class BirthdaySchedulerCog(commands.Cog):
 
         :param ctx: The invocation context.
         """
-        if not self.birthdays:
+        async with SessionLocal() as db:
+            birthdays = (await db.scalars(select(Birthday))).all()
+            default_message = await _get_setting(db, DEFAULT_MESSAGE_KEY, DEFAULT_MESSAGE)
+
+        if not birthdays:
             embed = discord.Embed(
                 description="No birthdays saved.",
                 color=discord.Color.orange()
@@ -222,23 +278,35 @@ class BirthdaySchedulerCog(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        embed = discord.Embed(
-            title="🎂 Birthday calendar",
-            color=discord.Color.blurple()
-        )
-        for uid, data in self.birthdays.items():
-            user = await ctx.guild.fetch_member(int(uid))
-            name = user.display_name if user else f"Unknown ({uid})"
-            date = data["date"]
-            message = data["message"] if data["message"] != "DEFAULT" else DEFAULT_MESSAGE
-            embed.add_field(
-                name=f"{name} — {date}",
-                value=f"_{message}_",
-                inline=False
-            )
+        lines = []
+        for birthday in birthdays:
+            # get_member returns None for someone who left; fetch_member would raise and break the whole list.
+            user = ctx.guild.get_member(birthday.user_id)
+            name = user.display_name if user else f"Unknown ({birthday.user_id})"
+            date = birthday.date
+            message = birthday.message if birthday.message != "DEFAULT" else default_message
+            # Cut one oversized entry so it still fits in an embed by itself.
+            lines.append(f"**{name} — {date}**\n_{message}_"[:EMBED_DESCRIPTION_LIMIT])
 
-        embed.set_footer(text=f"{len(self.birthdays)} birthday(s) saved")
-        await ctx.send(embed=embed)
+        # One text block, not a field per birthday: an embed holds at most 25 fields.
+        # Whole entries are packed into pages, so no entry is split across two embeds.
+        pages = []
+        for line in lines:
+            if pages and len(pages[-1]) + 1 + len(line) <= EMBED_DESCRIPTION_LIMIT:
+                pages[-1] += "\n" + line
+            else:
+                pages.append(line)
+
+        # One message per page: the embeds of a single message share a 6000-character limit.
+        for number, page in enumerate(pages, start=1):
+            embed = discord.Embed(
+                title="🎂 Birthday calendar" if number == 1 else None,
+                description=page,
+                color=discord.Color.blurple()
+            )
+            if number == len(pages):
+                embed.set_footer(text=f"{len(birthdays)} birthday(s) saved")
+            await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="birthday-get", description="Show the birthday of a specific user")
     async def birthday_get(self, ctx: commands.Context, user: discord.Member = None) -> None:
@@ -250,9 +318,12 @@ class BirthdaySchedulerCog(commands.Cog):
         :param user: The member whose birthday to look up. Defaults to the author.
         """
         user = user or ctx.author
-        uid = str(user.id)
 
-        if uid not in self.birthdays:
+        async with SessionLocal() as db:
+            birthday = await db.get(Birthday, user.id)
+            default_message = await _get_setting(db, DEFAULT_MESSAGE_KEY, DEFAULT_MESSAGE)
+
+        if birthday is None:
             embed = discord.Embed(
                 description=f"No birthday found for {user.display_name}.",
                 color=discord.Color.red()
@@ -260,9 +331,8 @@ class BirthdaySchedulerCog(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        birthday = self.birthdays[uid]
-        date = birthday["date"]
-        message = birthday["message"] if birthday["message"] != "DEFAULT" else DEFAULT_MESSAGE
+        date = birthday.date
+        message = birthday.message if birthday.message != "DEFAULT" else default_message
 
         embed = discord.Embed(
             title=f"🎂 {user.display_name}'s birthday",
@@ -280,31 +350,81 @@ class BirthdaySchedulerCog(commands.Cog):
         Sends a birthday message in the configured channel for each match.
         Runs at the time of day specified in CHECKING_TIME. Errors per user are caught and logged individually
         to prevent one failure from stopping the rest.
+        Also runs once at startup (see before_check); a day that was already announced is skipped.
         """
-        today = dt.datetime.now().strftime("%d-%m")
+        now = dt.datetime.now(TIMEZONE)
+        today = now.date().isoformat()
+        dates = [now.strftime("%d-%m")]
+        # Leap-day birthdays are announced on 28-02 in years that have no 29-02.
+        if dates[0] == "28-02" and not calendar.isleap(now.year):
+            dates.append("29-02")
         channel = self.bot.get_channel(self.birthday_channel)
 
+        # An error that escapes a tasks.loop stops it for good, so report and skip today instead of raising.
         if channel is None:
-            raise commands.ChannelNotFound("Channel not found.")
+            await self.bot.report_error(
+                "birthday check", f"Birthday channel {self.birthday_channel} not found, skipping today's check."
+            )
+            return
 
-        for uid, data in self.birthdays.items():
-            message = data["message"]
+        try:
+            async with SessionLocal() as db:
+                last_check = await _get_setting(db, LAST_CHECK_KEY, None)
+                default_message = await _get_setting(db, DEFAULT_MESSAGE_KEY, DEFAULT_MESSAGE)
+                default_role = await _get_setting(db, DEFAULT_ROLE_KEY, DEFAULT_ROLE)
+                birthdays = (await db.scalars(select(Birthday).where(Birthday.date.in_(dates)))).all()
+        except Exception as e:
+            await self.bot.report_error("birthday check", e)
+            return
 
-            if data["date"] != today:
-                continue
+        # A restart on a day that was already announced must not announce it again.
+        if last_check == today:
+            return
+
+        for birthday in birthdays:
+            uid = birthday.user_id
+            message = birthday.message
             try:
-                member = await channel.guild.fetch_member(int(uid))
+                member = await channel.guild.fetch_member(uid)
                 if member is None:
                     raise commands.UserNotFound("User not found.")
 
                 if message == "DEFAULT":
-                    message = DEFAULT_MESSAGE
-                message = _replace_placeholders(message, uid)
-                await channel.send(message)
+                    # Only admins can write the default message, so it may ping whatever it names.
+                    message = default_message
+                    allowed_mentions = discord.AllowedMentions.all()
+                else:
+                    allowed_mentions = _custom_message_mentions(message, default_role)
+                message = _replace_placeholders(message, uid, default_role)
+                await channel.send(message, allowed_mentions=allowed_mentions)
             except Exception as e:
-                print(f"Error thrown at birthday of uid:{uid}:\n {e}")
+                await self.bot.report_error(f"birthday of user {uid}", e)
+
+        # Stored only here, after the announcements: a run that gave up earlier is retried at the next start.
+        try:
+            async with SessionLocal.begin() as db:
+                await _set_setting(db, LAST_CHECK_KEY, today)
+        except Exception as e:
+            await self.bot.report_error("birthday check", e)
 
     @check_birthdays.before_loop
     async def before_check(self):
-        """Wait until the bot is fully ready before starting the birthday check loop."""
+        """
+        Wait until the bot is fully ready, then announce today's birthdays if the bot was down at midnight.
+        Days that were missed completely are not announced.
+        """
         await self.bot.wait_until_ready()
+
+        # An error that escapes before_loop stops the loop before it starts, so report instead of raising.
+        try:
+            async with SessionLocal.begin() as db:
+                if await _get_setting(db, LAST_CHECK_KEY, None) is None:
+                    # First start with this feature: the old version may have announced today already,
+                    # so mark today as done instead of risking a second announcement.
+                    await _set_setting(db, LAST_CHECK_KEY, dt.datetime.now(TIMEZONE).date().isoformat())
+                    return
+        except Exception as e:
+            await self.bot.report_error("birthday check", e)
+            return
+
+        await self.check_birthdays()

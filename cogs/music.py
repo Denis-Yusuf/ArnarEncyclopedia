@@ -2,6 +2,8 @@ import asyncio
 import random
 
 import discord
+import requests
+import spotipy
 import yt_dlp
 from discord.ext import commands
 
@@ -100,6 +102,9 @@ class NowPlayingView(discord.ui.View):
 
 
 PLAYLIST_CAP = 50
+# Everything a Spotify lookup can raise: API and auth errors from spotipy, network errors from
+# requests underneath it (a spotipy dependency, so always installed).
+SPOTIFY_ERRORS = (spotipy.SpotifyBaseException, requests.RequestException)
 
 
 class QueueSelect(discord.ui.Select):
@@ -255,6 +260,8 @@ class MusicCog(commands.Cog):
         self._now_playing_messages: dict[int, discord.Message] = {}
         self._now_playing_views: dict[int, NowPlayingView] = {}
         self._seek_to: dict[int, int] = {}
+        # Guilds with a player loop running; while set, new songs are queued instead of started.
+        self._players: set[int] = set()
 
     # ------------------------------------------------------------------
     # Output-channel helpers
@@ -432,10 +439,10 @@ class MusicCog(commands.Cog):
         thumbnail: str | None = None,
         uploader: str | None = None,
         duration: int = 0,
-    ) -> None:
+    ) -> bool:
         """
         Starts playback and posts the now-playing message.
-        Blocks until the track finishes, then either seeks, loops, or advances the queue.
+        Blocks until the track finishes. What plays next is decided by ``_run_player``.
         When ``audio_url`` is provided the yt-dlp fetch is skipped entirely; callers that
         already fetched the full audio info should pass it through to avoid a redundant request.
         Seek and loop paths intentionally omit it so a fresh stream URL is obtained each time
@@ -450,6 +457,7 @@ class MusicCog(commands.Cog):
         :param thumbnail: Pre-fetched thumbnail URL.
         :param uploader: Pre-fetched uploader name.
         :param duration: Pre-fetched duration in seconds.
+        :return: True once the track has played, False if its audio could not be fetched.
         """
         self._cancel_disconnect(ctx.guild.id)
         await self._clear_now_playing(ctx.guild.id)
@@ -459,12 +467,10 @@ class MusicCog(commands.Cog):
                 audio_url, _, _, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
             except asyncio.TimeoutError:
                 await self._send(ctx, f"Timed out fetching **{title}**, skipping.")
-                await self._play_next(ctx)
-                return
+                return False
             except yt_dlp.utils.DownloadError:
                 await self._send(ctx, f"Could not load **{title}**, skipping.")
-                await self._play_next(ctx)
-                return
+                return False
 
         # Prepend -ss to before_options when seeking; a copy avoids mutating the module-level constant
         if seek_offset:
@@ -479,14 +485,21 @@ class MusicCog(commands.Cog):
         view = NowPlayingView(self, ctx, duration)
 
         # asyncio.Event lets us await the end of playback without polling.
-        # The after callback runs in a non-async thread, so we just set the event
-        # there and await it here in the coroutine.
+        # The after callback runs in the audio thread, so it sets the event through the bot's loop
+        # and the coroutine awaits it here.
         done = asyncio.Event()
 
         def after_playing(error):
-            if error:
-                print(f"[MusicCog] Playback error in guild {ctx.guild.id}: {error}")
-            done.set()
+            try:
+                if error:
+                    # This callback runs in the audio thread, so hand the coroutine to the bot's loop.
+                    asyncio.run_coroutine_threadsafe(
+                        self.bot.report_error(f"music playback in {ctx.guild.name}", error), self.bot.loop
+                    )
+            finally:
+                # Always release _stream, even if reporting fails (e.g. the loop is closing).
+                # asyncio.Event is not thread-safe: set it on the loop so the waiter wakes right away.
+                self.bot.loop.call_soon_threadsafe(done.set)
 
         ctx.voice_client.play(source, after = after_playing)
 
@@ -506,54 +519,111 @@ class MusicCog(commands.Cog):
         self._now_playing_views[ctx.guild.id] = view
 
         await done.wait()
+        return True
 
-        seek = self._seek_to.pop(ctx.guild.id, None)
-        if seek is not None and ctx.voice_client:
-            await self._stream(ctx, query, title, webpage_url, seek_offset = seek)
-        elif self.is_looping(ctx.guild.id):
-            current = self.get_current(ctx.guild.id)
-            if current:
-                await self._stream(ctx, current['query'], current['title'], webpage_url)
-        else:
-            await self._play_next(ctx)
-
-    async def _play_next(self, ctx: commands.Context) -> None:
+    async def _fetch_track(self, query: str) -> dict:
         """
-        Pulls the next song off the queue and plays it, or starts the idle timer if the queue is empty.
-        On fetch failure the failed item is skipped and this method calls itself recursively.
+        Fetches the audio for a query and returns it as keyword arguments for ``_stream``.
+
+        :param query: yt-dlp compatible query string for the song.
+        :return: A dict with query, title, webpage_url, audio_url, thumbnail, uploader and duration.
+        :raises asyncio.TimeoutError: When yt-dlp takes too long to respond.
+        :raises yt_dlp.utils.DownloadError: When yt-dlp cannot find any results.
+        """
+        audio_url, title, webpage_url, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
+        return {
+            "query": query, "title": title, "webpage_url": webpage_url,
+            "audio_url": audio_url, "thumbnail": thumbnail, "uploader": uploader, "duration": duration,
+        }
+
+    async def _next_track(self, ctx: commands.Context) -> dict | None:
+        """
+        Pulls songs off the queue until one loads. Songs that fail to load are skipped.
+        Starts the idle timer when the queue is empty.
 
         :param ctx: Used to access the voice client and send messages.
+        :return: Keyword arguments for ``_stream``, or None when there is nothing to play.
         """
         queue = self.get_queue(ctx.guild.id)
-        if not ctx.voice_client:
-            return
-        if not queue:
-            await self._clear_now_playing(ctx.guild.id)
-            self._schedule_disconnect(ctx)
-            return
+        while ctx.voice_client:
+            if not queue:
+                await self._clear_now_playing(ctx.guild.id)
+            # Checked again: a song can be queued while the message above is being edited.
+            if not queue:
+                self._schedule_disconnect(ctx)
+                return None
 
-        item = queue.pop(0)
-        async with self._typing(ctx):
-            try:
-                audio_url, title, webpage_url, thumbnail, uploader, duration = await self.youtube.fetch_audio(item['query'])
-            except asyncio.TimeoutError:
-                await self._send(ctx, f"Timed out fetching **{item['title']}**, skipping.")
-                # Recurse so the next item is attempted rather than leaving the queue stalled
-                await self._play_next(ctx)
-                return
-            except yt_dlp.utils.DownloadError:
-                await self._send(ctx, f"Could not load **{item['title']}**, skipping.")
-                await self._play_next(ctx)
-                return
+            item = queue.pop(0)
+            async with self._typing(ctx):
+                try:
+                    return await self._fetch_track(item['query'])
+                except asyncio.TimeoutError:
+                    await self._send(ctx, f"Timed out fetching **{item['title']}**, skipping.")
+                except yt_dlp.utils.DownloadError:
+                    await self._send(ctx, f"Could not load **{item['title']}**, skipping.")
+        return None
+
+    async def _run_player(self, ctx: commands.Context, track: dict | None = None) -> None:
+        """
+        Plays ``track`` (or the next queued song) and keeps going until nothing is left,
+        handling seek, loop mode and the queue after each song.
+        This is a loop on purpose: when every song called the next one, the call chain grew
+        with each song and hit Python's recursion limit in long sessions.
+
+        :param ctx: Used to access the voice client and send messages.
+        :param track: Keyword arguments for ``_stream``; if None, the next queued song is used.
+        """
+        guild_id = ctx.guild.id
+        self._players.add(guild_id)
         try:
-            await self._stream(
-                ctx, item['query'], title, webpage_url,
-                audio_url = audio_url, thumbnail = thumbnail, uploader = uploader, duration = duration,
-            )
-        except Exception as exc:
-            print(f"[MusicCog] Unexpected error during playback in guild {ctx.guild.id}: {exc}")
-            await self._send(ctx, f"Unexpected error playing **{title}**, skipping.")
-            await self._play_next(ctx)
+            while True:
+                track = track or await self._next_track(ctx)
+                if track is None:
+                    return
+                try:
+                    played = await self._stream(ctx, **track)
+                except Exception as exc:
+                    await self.bot.report_error(f"music playback in {ctx.guild.name}", exc)
+                    await self._send(ctx, f"Unexpected error playing **{track['title']}**, skipping.")
+                    played = False
+                finished, track = track, None
+                if not played:
+                    continue
+
+                seek = self._seek_to.pop(guild_id, None)
+                if seek is not None and ctx.voice_client:
+                    track = {
+                        "query": finished['query'], "title": finished['title'],
+                        "webpage_url": finished['webpage_url'], "seek_offset": seek,
+                    }
+                elif self.is_looping(guild_id):
+                    current = self.get_current(guild_id)
+                    if current is None:
+                        return
+                    # No audio_url: a fresh stream URL is fetched, since YouTube's expire.
+                    track = {
+                        "query": current['query'], "title": current['title'],
+                        "webpage_url": finished['webpage_url'],
+                    }
+        finally:
+            self._players.discard(guild_id)
+
+    async def _join_voice(self, ctx: commands.Context) -> None:
+        """
+        Connects to, or moves to, the voice channel of the command author.
+
+        :param ctx: Used to access voice state.
+        """
+        channel = ctx.author.voice.channel
+        if ctx.voice_client is None:
+            await channel.connect(self_deaf = True)
+            # A fresh connection has no playback; drop a flag left behind by a player that never finished.
+            # shortcut: the flag has no owner, so Stop followed by /play while the old player is still
+            # fetching a song can let that old player clear the new one's flag; give each player a
+            # token if double playback after a quick stop-and-play is ever seen.
+            self._players.discard(ctx.guild.id)
+        elif ctx.voice_client.channel != channel:
+            await ctx.voice_client.move_to(channel)
 
     async def _play_in_voice(self, ctx: commands.Context, query: str) -> None:
         """
@@ -563,19 +633,12 @@ class MusicCog(commands.Cog):
         :param ctx: Used to access voice state and send messages.
         :param query: yt-dlp compatible query string (URL or 'ytsearch:...' prefix).
         """
-        if not ctx.author.voice:
-            await self._send(ctx, "You must be in a voice channel.")
+        if not await self._prepare_voice(ctx):
             return
 
-        channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            await channel.connect(self_deaf = True)
-        elif ctx.voice_client.channel != channel:
-            await ctx.voice_client.move_to(channel)
-
-        await self._ensure_ack(ctx)
-
-        if ctx.voice_client.is_playing():
+        # A running player covers playing, paused and the gap between two songs:
+        # starting a second playback on top would fight the first one over the queue.
+        if ctx.guild.id in self._players:
             # Something is already playing — only need the title to dedup and queue
             async with self._typing(ctx):
                 try:
@@ -591,24 +654,30 @@ class MusicCog(commands.Cog):
                 return
             self.get_queue(ctx.guild.id).append({"query": query, "title": title})
             await self._send(ctx, f'Added to queue: **{title}**')
+            # The player may have run out of songs and stopped while the title was being looked up.
+            if ctx.guild.id not in self._players:
+                await self._run_player(ctx)
             return
 
-        # Nothing playing — fetch the full audio info so _stream doesn't have to
-        async with self._typing(ctx):
-            try:
-                audio_url, title, webpage_url, thumbnail, uploader, duration = await self.youtube.fetch_audio(query)
-            except asyncio.TimeoutError:
-                await self._send(ctx, "Search timed out. Try again or use a direct URL.")
-                return
-            except yt_dlp.utils.DownloadError:
-                await self._send(ctx, "No results found for that query.")
-                return
+        # Reserve the player before the slow fetch, so a second /play queues instead of racing this one.
+        self._players.add(ctx.guild.id)
+        try:
+            # Nothing playing — fetch the full audio info so _stream doesn't have to
+            track = None
+            async with self._typing(ctx):
+                try:
+                    track = await self._fetch_track(query)
+                except asyncio.TimeoutError:
+                    await self._send(ctx, "Search timed out. Try again or use a direct URL.")
+                except yt_dlp.utils.DownloadError:
+                    await self._send(ctx, "No results found for that query.")
 
-        ctx.voice_client.stop()
-        await self._stream(
-            ctx, query, title, webpage_url,
-            audio_url = audio_url, thumbnail = thumbnail, uploader = uploader, duration = duration,
-        )
+            if track:
+                ctx.voice_client.stop()
+            # Also without a track: songs queued during the fetch saw the reservation and wait for this player.
+            await self._run_player(ctx, track)
+        finally:
+            self._players.discard(ctx.guild.id)
 
     async def _enqueue_playlist(self, ctx: commands.Context, url: str) -> None:
         """
@@ -618,17 +687,8 @@ class MusicCog(commands.Cog):
         :param ctx: Used to access voice state and send messages.
         :param url: A YouTube playlist or video-in-playlist URL.
         """
-        if not ctx.author.voice:
-            await self._send(ctx, "You must be in a voice channel.")
+        if not await self._prepare_voice(ctx):
             return
-
-        channel = ctx.author.voice.channel
-        if ctx.voice_client is None:
-            await channel.connect(self_deaf = True)
-        elif ctx.voice_client.channel != channel:
-            await ctx.voice_client.move_to(channel)
-
-        await self._ensure_ack(ctx)
 
         async with self._typing(ctx):
             try:
@@ -640,73 +700,134 @@ class MusicCog(commands.Cog):
                 await self._send(ctx, "Could not load that playlist.")
                 return
 
-            if not entries:
-                await self._send(ctx, "The playlist appears to be empty or unavailable.")
+        await self._enqueue_entries(ctx, entries)
+
+    async def _enqueue_spotify_collection(self, ctx: commands.Context, url: str) -> None:
+        """
+        Fetches the songs of a Spotify album or playlist link, bulk-adds them to the queue,
+        and kicks off playback if nothing is currently playing.
+
+        :param ctx: Used to access voice state and send messages.
+        :param url: A Spotify album or playlist URL.
+        """
+        if not await self._prepare_voice(ctx):
+            return
+
+        async with self._typing(ctx):
+            try:
+                # fetch_collection does blocking HTTP; a thread keeps the event loop free.
+                entries = await asyncio.to_thread(self.spotify.fetch_collection, url)
+            except SPOTIFY_ERRORS:
+                await self._send(ctx, "Could not load that Spotify link.")
                 return
 
-            capped = len(entries) > PLAYLIST_CAP
-            entries = entries[:PLAYLIST_CAP]
-            queue = self.get_queue(ctx.guild.id)
-            added = 0
-            # Track the first newly added entry so we can pop and play it immediately
-            # if nothing is currently running, without replaying something mid-queue.
-            first_entry = None
-            for webpage_url, title in entries:
-                if not self._is_queued(ctx.guild.id, title):
-                    queue.append({"query": webpage_url, "title": title})
-                    added += 1
-                    if first_entry is None:
-                        first_entry = queue[-1]
+        if entries is None:
+            await self._send(ctx, "That Spotify link is not supported.")
+            return
+        await self._enqueue_entries(ctx, entries)
 
-            cap_note = f" *(capped at {PLAYLIST_CAP})*" if capped else ""
-            await self._send(ctx, f'Added **{added}** song(s) from playlist to queue{cap_note}.')
+    async def _prepare_voice(self, ctx: commands.Context) -> bool:
+        """
+        Joins the author's voice channel and acknowledges the command before a slow fetch.
 
-            first_audio = None
-            if not ctx.voice_client.is_playing() and first_entry:
-                # Pop the first entry out of the queue and fetch its audio so we can
-                # stream it immediately after the typing context closes.
-                item = queue.pop(queue.index(first_entry))
+        :param ctx: Used to access voice state and send messages.
+        :return: False when the author is not in a voice channel (they have been told so).
+        """
+        if not ctx.author.voice:
+            await self._send(ctx, "You must be in a voice channel.")
+            return False
+
+        await self._join_voice(ctx)
+        await self._ensure_ack(ctx)
+        return True
+
+    async def _enqueue_entries(self, ctx: commands.Context, entries: list[tuple[str, str]]) -> None:
+        """
+        Bulk-adds playlist entries to the queue and kicks off playback if nothing is currently playing.
+
+        :param ctx: Used to access voice state and send messages.
+        :param entries: (yt-dlp query, title) tuples, in playlist order.
+        """
+        # Stop or a disconnect while the list was loading: queueing now would leave songs behind with nothing to play them.
+        # The reply also answers the slash command, which the typing indicator already deferred.
+        if not ctx.voice_client:
+            await self._send(ctx, "Playback was stopped before the playlist finished loading.")
+            return
+
+        if not entries:
+            await self._send(ctx, "The playlist appears to be empty or unavailable.")
+            return
+
+        capped = len(entries) > PLAYLIST_CAP
+        entries = entries[:PLAYLIST_CAP]
+        queue = self.get_queue(ctx.guild.id)
+        added = 0
+        # Track the first newly added entry so we can pop and play it immediately
+        # if nothing is currently running, without replaying something mid-queue.
+        first_entry = None
+        for query, title in entries:
+            if not self._is_queued(ctx.guild.id, title):
+                queue.append({"query": query, "title": title})
+                added += 1
+                if first_entry is None:
+                    first_entry = queue[-1]
+
+        cap_note = f" *(capped at {PLAYLIST_CAP})*" if capped else ""
+        await self._send(ctx, f'Added **{added}** song(s) from playlist to queue{cap_note}.')
+
+        # A running player will reach the new songs by itself.
+        if ctx.guild.id in self._players or first_entry not in queue:
+            return
+
+        # Reserve the player before the slow fetch, so a /play in the meantime queues instead of racing.
+        self._players.add(ctx.guild.id)
+        try:
+            # Pop the first new entry and play it right away; the player takes the rest from the queue.
+            item = queue.pop(queue.index(first_entry))
+            track = None
+            async with self._typing(ctx):
                 try:
-                    first_audio = await self.youtube.fetch_audio(item['query'])
+                    track = await self._fetch_track(item['query'])
                 except (asyncio.TimeoutError, yt_dlp.utils.DownloadError):
                     await self._send(ctx, f"Could not load **{item['title']}**, skipping to next.")
-                    await self._play_next(ctx)
-                    return
-
-        if first_audio is not None:
-            audio_url, title, webpage_url, thumbnail, uploader, duration = first_audio
-            try:
-                await self._stream(
-                    ctx, item['query'], title, webpage_url,
-                    audio_url = audio_url, thumbnail = thumbnail, uploader = uploader, duration = duration,
-                )
-            except Exception as exc:
-                print(f"[MusicCog] Unexpected error during playback in guild {ctx.guild.id}: {exc}")
-                await self._send(ctx, f"Unexpected error playing **{title}**, skipping.")
-                await self._play_next(ctx)
+            await self._run_player(ctx, track)
+        finally:
+            self._players.discard(ctx.guild.id)
 
     @commands.hybrid_command(name = 'play', description = 'Play from a YouTube URL, playlist, Spotify URL, or search query.')
     async def play_cmd(self, ctx: commands.Context, *, query: str) -> None:
         """
         Universal play command. Routing priority:
         1. YouTube playlist URL (contains 'list=') → _enqueue_playlist
-        2. Spotify track URL (contains 'spotify.com') → resolve via Spotify, then search YouTube
-        3. Everything else → YouTube URL or search via _play_in_voice
+        2. Spotify album or playlist URL → _enqueue_spotify_collection
+        3. Spotify track URL → resolve via Spotify, then search YouTube
+        4. Everything else → YouTube URL or search via _play_in_voice
 
         :param ctx: The invocation context.
-        :param query: A YouTube URL, playlist URL, Spotify track URL, or plain-text search string.
+        :param query: A YouTube URL, playlist URL, Spotify URL, or plain-text search string.
         """
         if ctx.interaction is None:
             await ctx.message.delete()
         if self.youtube.is_playlist_url(query):
             await self._enqueue_playlist(ctx, query)
         elif 'spotify.com' in query:
-            search_query = self.spotify.resolve_query(query)
-            if not search_query:
-                await self._send(ctx, "No results found on Spotify.")
-                return
-            await self._send(ctx, f'Found: **{search_query}** — searching YouTube...')
-            await self._play_in_voice(ctx, f'ytsearch:{search_query}')
+            if '/album/' in query or '/playlist/' in query:
+                await self._enqueue_spotify_collection(ctx, query)
+            elif '/track/' in query:
+                try:
+                    # resolve_query does blocking HTTP; a thread keeps the event loop free for other commands.
+                    search_query = await asyncio.to_thread(self.spotify.resolve_query, query)
+                except SPOTIFY_ERRORS:
+                    await self._send(ctx, "Could not load that Spotify link.")
+                    return
+                if not search_query:
+                    await self._send(ctx, "No results found on Spotify.")
+                    return
+                await self._send(ctx, f'Found: **{search_query}** — searching YouTube...')
+                await self._play_in_voice(ctx, f'ytsearch:{search_query}')
+            else:
+                # Artist, show and episode links have no single song list to queue.
+                await self._send(ctx, "That Spotify link is not supported.")
         else:
             await self._play_in_voice(ctx, self.youtube.build_query(query))
 
@@ -725,7 +846,8 @@ class MusicCog(commands.Cog):
         if not queue:
             await self._send(ctx, "The queue is empty.")
             return
-        lines = [f"`{position + 1}.` {item['title']}" for position, item in enumerate(queue)]
+        # Only the first 25: the dropdown holds 25, and the full list can exceed Discord's 2000 characters.
+        lines = [f"`{position + 1}.` {item['title'][:70]}" for position, item in enumerate(queue[:25])]
         suffix = f"\n*Showing first 25 of {len(queue)} songs.*" if len(queue) > 25 else ""
         await self._send(ctx, "**Queue:**\n" + "\n".join(lines) + suffix, view = QueueView(self, ctx))
 
@@ -789,7 +911,8 @@ class MusicCog(commands.Cog):
         """
         if ctx.interaction is None:
             await ctx.message.delete()
-        if ctx.voice_client and ctx.voice_client.is_playing():
+        # Same check as the Skip button: a paused song can be skipped too.
+        if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
             ctx.voice_client.stop()
             await self._send(ctx, "Skipped.")
         else:
