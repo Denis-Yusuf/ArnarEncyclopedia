@@ -632,12 +632,8 @@ class MusicCog(commands.Cog):
         :param ctx: Used to access voice state and send messages.
         :param query: yt-dlp compatible query string (URL or 'ytsearch:...' prefix).
         """
-        if not ctx.author.voice:
-            await self._send(ctx, "You must be in a voice channel.")
+        if not await self._prepare_voice(ctx):
             return
-
-        await self._join_voice(ctx)
-        await self._ensure_ack(ctx)
 
         # A running player covers playing, paused and the gap between two songs:
         # starting a second playback on top would fight the first one over the queue.
@@ -666,17 +662,18 @@ class MusicCog(commands.Cog):
         self._players.add(ctx.guild.id)
         try:
             # Nothing playing — fetch the full audio info so _stream doesn't have to
+            track = None
             async with self._typing(ctx):
                 try:
                     track = await self._fetch_track(query)
                 except asyncio.TimeoutError:
                     await self._send(ctx, "Search timed out. Try again or use a direct URL.")
-                    return
                 except yt_dlp.utils.DownloadError:
                     await self._send(ctx, "No results found for that query.")
-                    return
 
-            ctx.voice_client.stop()
+            if track:
+                ctx.voice_client.stop()
+            # Also without a track: songs queued during the fetch saw the reservation and wait for this player.
             await self._run_player(ctx, track)
         finally:
             self._players.discard(ctx.guild.id)
