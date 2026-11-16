@@ -485,8 +485,8 @@ class MusicCog(commands.Cog):
         view = NowPlayingView(self, ctx, duration)
 
         # asyncio.Event lets us await the end of playback without polling.
-        # The after callback runs in a non-async thread, so we just set the event
-        # there and await it here in the coroutine.
+        # The after callback runs in the audio thread, so it sets the event through the bot's loop
+        # and the coroutine awaits it here.
         done = asyncio.Event()
 
         def after_playing(error):
@@ -498,7 +498,8 @@ class MusicCog(commands.Cog):
                     )
             finally:
                 # Always release _stream, even if reporting fails (e.g. the loop is closing).
-                done.set()
+                # asyncio.Event is not thread-safe: set it on the loop so the waiter wakes right away.
+                self.bot.loop.call_soon_threadsafe(done.set)
 
         ctx.voice_client.play(source, after = after_playing)
 
